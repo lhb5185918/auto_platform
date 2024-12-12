@@ -1,9 +1,13 @@
 from django.urls import path
-from test_platform.views import login_views, project_view
+from test_platform.views.login_views import LoginView, RegisterView
+from test_platform.views.project_view import ProjectView, get_project_list
 
 urlpatterns = [
-    path('api/login/', login_views.LoginView.as_view(), name='login'),
-    path('api/register/', login_views.RegisterView.as_view(), name='register'),
-    path('api/project/', project_view.get_project_list, name='get_project_list'),
-    path('api/project/create/', project_view.creat_project, name='creat_project')
+    # 登录相关路由
+    path('api/login/', LoginView.as_view(), name='login'),
+    path('api/register/', RegisterView.as_view(), name='register'),
+    
+    # 项目相关路由
+    path('api/project/', get_project_list, name='project_list'),
+    path('api/project/create/', ProjectView.as_view(), name='create_project'),
 ]

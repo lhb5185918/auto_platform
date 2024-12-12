@@ -9,7 +9,7 @@ class Project(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
     is_deleted = models.BooleanField(default=False, verbose_name='是否删除')
-    is_active = models.BooleanField(default=True, verbose_name='状态是否活跃')
+    is_active = models.IntegerField(default=0, verbose_name='状态是否活跃')
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='projects', verbose_name='用户')
 
     def __str__(self):
