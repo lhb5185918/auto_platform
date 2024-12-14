@@ -57,3 +57,10 @@ class TestCase(models.Model):
 
 def __str__(self):
     return self.case_name
+class TestEnvironment(models.Model):
+    environment_id = models.AutoField(primary_key=True, verbose_name='环境ID')
+    host = models.CharField(max_length=255, verbose_name='主机地址')
+    port = models.IntegerField(verbose_name='端口号')
+    base_url = models.CharField(max_length=255, verbose_name='基础URL')
+    protocol = models.CharField(max_length=50, verbose_name='协议')
+    token = models.CharField(max_length=255, verbose_name='令牌值')
