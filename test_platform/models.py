@@ -39,7 +39,7 @@ class TestCase(models.Model):
     case_assert_type = models.CharField(max_length=50, verbose_name='断言类型', null=True, blank=True,
                                         db_comment='断言的类型')
     case_assert_contents = models.TextField(verbose_name='断言内容', db_comment='断言的具体内容')
-    creat_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间', db_comment='测试用例的创建时间')
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间', db_comment='测试用例的创建时间')
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间', db_comment='测试用例的最后更新时间')
     last_executed_at = models.DateTimeField(verbose_name='最近执行时间', null=True, blank=True,
                                             db_comment='最后一次执行测试用例的时间')
@@ -54,9 +54,10 @@ class TestCase(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='test_cases', verbose_name='项目',
                                 db_comment='关联的项目')
 
+    def __str__(self):
+        return self.case_name
 
-def __str__(self):
-    return self.case_name
+
 class TestEnvironment(models.Model):
     environment_id = models.AutoField(primary_key=True, verbose_name='环境ID')
     host = models.CharField(max_length=255, verbose_name='主机地址')
@@ -64,3 +65,19 @@ class TestEnvironment(models.Model):
     base_url = models.CharField(max_length=255, verbose_name='基础URL')
     protocol = models.CharField(max_length=50, verbose_name='协议')
     token = models.CharField(max_length=255, verbose_name='令牌值')
+    db_host = models.CharField(max_length=255, verbose_name='主机地址')
+    db_port = models.IntegerField(verbose_name='端口号')
+    db_name = models.CharField(max_length=255, verbose_name='数据库名称')
+    db_user = models.CharField(max_length=50, verbose_name='用户名')
+    db_password = models.CharField(max_length=50, verbose_name='密码')
+    time_out = models.IntegerField(verbose_name='超时时间')
+    description = models.TextField(verbose_name='环境描述')
+    content_type = models.CharField(max_length=50, verbose_name='内容类型')
+    charset = models.CharField(max_length=50, verbose_name='字符集')
+    env_name = models.CharField(max_length=50, verbose_name='环境名称')
+    version = models.CharField(max_length=50, verbose_name='版本号')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='environments', verbose_name='项目',
+                                db_comment='关联的项目')
+
+    def __str__(self):
+        return self.env_name
