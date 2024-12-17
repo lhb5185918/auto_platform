@@ -11,6 +11,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 import json
 from django.db.models import Q
+from rest_framework.parsers import MultiPartParser
+import pandas as pd
+from django.db import transaction
+from test_platform.serializers import TestCaseSerializer
+from rest_framework import serializers
+
 
 
 class TestCaseView(APIView):
@@ -386,15 +392,15 @@ class TestEnvironmentView(APIView):
             environment = TestEnvironment.objects.get(
                 environment_id=env_id
             )
-            
+
             # 删除环境变量
             environment.delete()
-            
+
             return JsonResponse({
                 'code': 200,
                 'message': '环境变量删除成功'
             })
-            
+
         except TestEnvironment.DoesNotExist:
             return JsonResponse({
                 'code': 404,
@@ -405,3 +411,163 @@ class TestEnvironmentView(APIView):
                 'code': 400,
                 'message': f'删除环境变量失败：{str(e)}'
             }, status=400)
+
+
+class TestCaseImportView(APIView):
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+    parser_classes = (MultiPartParser,)
+
+    def post(self, request):
+        try:
+            file = request.FILES.get('file')
+            project_id = request.data.get('project_id')
+
+            # 添加更详细的调试信息
+            print("原始project_id:", project_id)
+            print("project_id类型:", type(project_id))
+            print("请求数据:", request.data)
+
+            if not file or not project_id:
+                return JsonResponse({
+                    'code': 400,
+                    'message': '缺少项目id或未上传文件'
+                }, status=400)
+
+            try:
+                project_id = int(project_id)
+                print("转换后的project_id:", project_id)
+            except (TypeError, ValueError):
+                return JsonResponse({
+                    'code': 400,
+                    'message': '无效的项目ID'
+                }, status=400)
+
+            if not (file.name.endswith('.xlsx') or file.name.endswith('.xls')):
+                return JsonResponse({
+                    'code': 400,
+                    'message': '文件格式错误，请上传xlsx或xls文件'
+                }, status=400)
+
+            # 读取Excel文件并打印列名，帮助调试
+            df = pd.read_excel(file)
+            print("Excel列名:", df.columns.tolist())
+
+            # 定义Excel列名和代码中使用的字段的映射关系
+            column_mapping = {
+                'post请求': '用例标题',
+                'api/post': 'api路径',
+                'post': '请求方法',
+                'Unnamed: 3': '请求参数',
+                '{12}': '请求体',
+                '高': '优先级',
+                '{12}.1': '断言',
+                '成功': '预期结果'
+            }
+
+            # 重命名列
+            df = df.rename(columns=column_mapping)
+
+            # 检查必需的列
+            required_columns = ['用例标题', 'api路径', '请求方法']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                return JsonResponse({
+                    'code': 400,
+                    'message': f'缺少列：{", ".join(missing_columns)}'
+                }, status=400)
+
+            with transaction.atomic():
+                imported_count = 0
+                test_cases = []
+
+                for _, row in df.iterrows():
+                    test_case_data = {
+                        'project_id': int(project_id),
+                        'case_name': row['用例标题'],
+                        'case_path': row['api路径'],
+                        'case_request_method': row['请求方法'].upper(),
+                        'case_priority': self.normalize_priority(row.get('优先级', '中')),
+                        'case_status': '0',
+                        'case_request_headers': self.ensure_json_format(row.get('请求头', '')),
+                        'case_params': self.ensure_json_format(row.get('请求参数', '')),
+                        'case_requests_body': self.ensure_json_format(row.get('请求体', '')),
+                        'case_assert_contents': row.get('断言', '$.code=200'),
+                        'case_description': row.get('描述', '从Excel导入的测试用例'),
+                        'case_expect_result': row.get('预期结果', '')
+                    }
+
+                    print("准备序列化的数据:", test_case_data)
+                    serializer = TestCaseSerializer(data=test_case_data)
+
+                    try:
+                        if serializer.is_valid(raise_exception=True):
+                            print("序列化后的数据:", serializer.validated_data)
+                            test_case = serializer.save()
+                            test_cases.append(test_case)
+                            imported_count += 1
+                    except serializers.ValidationError as e:
+                        print("序列化错误:", e.detail)
+                        return JsonResponse({
+                            'code': 400,
+                            'message': f'第{imported_count + 1}行数据验证失败：{e.detail}'
+                        }, status=400)
+
+                return JsonResponse({
+                    'code': 200,
+                    'message': '用例导入成功',
+                    'data': {
+                        'imported_count': imported_count
+                    }
+                })
+
+        except Exception as e:
+            print("导入错误:", str(e))
+            import traceback
+            traceback.print_exc()
+            return JsonResponse({
+                'code': 500,
+                'message': f'导入用例失败：{str(e)}'
+            }, status=500)
+
+    def normalize_priority(self, priority):
+        """标准化优先级值"""
+        # 打印接收到的优先级值，帮助调试
+        print("接收到的优先级值:", priority)
+
+        priority_map = {
+            '高': '2',
+            '中': '1',
+            '低': '0',
+            # 添加数字字符串的映射
+            '0': '0',
+            '1': '1',
+            '2': '2'
+        }
+
+        # 如果已经是数字字符串，直接返回
+        if priority in ['0', '1', '2']:
+            return priority
+
+        # 获取映射值，默认返回'1'（中优先级）
+        result = priority_map.get(str(priority).strip(), '1')
+        print("转换后的优先级值:", result)
+        return result
+
+    def ensure_json_format(self, value):
+        """确保值是有效的JSON格式"""
+        if not value:
+            return '{}'
+        try:
+            # 如果已经是字典，转换为JSON字符串
+            if isinstance(value, dict):
+                import json
+                return json.dumps(value)
+            # 如果是字符串，验证是否为有效的JSON
+            if isinstance(value, str):
+                import json
+                json.loads(value)
+                return value
+            return '{}'
+        except (json.JSONDecodeError, TypeError):
+            return '{}'
