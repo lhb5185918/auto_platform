@@ -78,6 +78,43 @@ class TestEnvironment(models.Model):
     version = models.CharField(max_length=50, verbose_name='版本号')
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='environments', verbose_name='项目',
                                 db_comment='关联的项目')
+    environment_cover = models.ForeignKey('TestEnvironmentCover', on_delete=models.CASCADE, null=True, blank=True,
+                                          related_name='environments', verbose_name='环境套')
 
     def __str__(self):
         return self.env_name
+
+
+class TestEnvironmentCover(models.Model):
+    environment_cover_id = models.AutoField(primary_key=True, verbose_name='环境套id')
+    environment_name = models.CharField(max_length=255, verbose_name='环境名称')
+    environment_description = models.TextField(verbose_name='环境描述')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='environment_covers',
+                                verbose_name='项目')
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    creat_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='environment_covers',
+                                   verbose_name='创建者')
+
+
+class TestResult(models.Model):
+    test_result_id = models.AutoField(primary_key=True, verbose_name='结果ID')
+    case = models.ForeignKey(TestCase, on_delete=models.CASCADE, related_name='results', verbose_name='测试用例')
+    execution_time = models.DateTimeField(verbose_name='执行时间')
+    status = models.CharField(max_length=20, verbose_name='执行状态', choices=[
+        ('PASS', '通过'),
+        ('FAIL', '失败'),
+        ('ERROR', '错误'),
+        ('SKIP', '跳过')
+    ])
+    result_data = models.TextField(verbose_name='结果数据')
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    error_message = models.TextField(verbose_name='错误信息', null=True, blank=True)
+    duration = models.FloatField(verbose_name='执行时长', help_text='单位：秒', default=0)
+    environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True, 
+                                  related_name='test_results', verbose_name='执行环境')
+
+    def __str__(self):
+        return f"{self.case.case_name} - {self.execution_time}"
+

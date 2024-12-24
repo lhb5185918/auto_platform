@@ -1,6 +1,6 @@
 from django.http import JsonResponse
 from django.core.paginator import Paginator
-from test_platform.models import Project, TestCase, TestEnvironment
+from test_platform.models import Project, TestCase, TestEnvironment, TestEnvironmentCover
 from django.contrib.auth.models import User
 from datetime import datetime
 from django.views.decorators.csrf import csrf_exempt
@@ -18,10 +18,31 @@ from test_platform.serializers import TestCaseSerializer
 from rest_framework import serializers
 
 
-
 class TestCaseView(APIView):
     permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication]
+
+    def _process_headers(self, headers):
+        """处理请求头数据的通用方法"""
+        if not headers:  # 如果headers为None或空
+            return '{}'
+            
+        if isinstance(headers, str):
+            try:
+                # 如果是字符串，尝试解析为JSON
+                headers = json.loads(headers)
+            except json.JSONDecodeError:
+                # 如果解析失败，使用空字典
+                return '{}'
+        elif isinstance(headers, dict):
+            # 如果是字典且为空，返回空JSON字符串
+            if not headers:
+                return '{}'
+            # 如果是非空字典，转换为JSON字符串
+            return json.dumps(headers)
+        
+        # 其他情况返回空JSON字符串
+        return '{}'
 
     def get(self, request, project_id):
         try:
@@ -46,21 +67,23 @@ class TestCaseView(APIView):
             }
 
             for case in current_page.object_list:
-                # 尝试将headers和body转换为字典
+                # 处理headers
                 try:
                     headers = json.loads(case.case_request_headers) if case.case_request_headers else {}
-                except:
-                    headers = case.case_request_headers
+                except json.JSONDecodeError:
+                    headers = {}
 
+                # 处理body
                 try:
                     body = json.loads(case.case_requests_body) if case.case_requests_body else {}
-                except:
-                    body = case.case_requests_body
+                except json.JSONDecodeError:
+                    body = {}
 
+                # 处理expected_result
                 try:
                     expected_result = json.loads(case.case_expect_result) if case.case_expect_result else {}
-                except:
-                    expected_result = case.case_expect_result
+                except json.JSONDecodeError:
+                    expected_result = {}
 
                 test_cases_data.append({
                     'case_id': case.test_case_id,
@@ -69,10 +92,10 @@ class TestCaseView(APIView):
                     'method': case.case_request_method,
                     'priority': priority_map.get(case.case_priority, '低'),
                     'status': status_map.get(case.last_execution_result, '未执行'),
-                    'headers': case.case_request_headers,
-                    'params': case.case_params,  # 如果需要params，需要在模型中添加相应字段
-                    'body': case.case_requests_body,
-                    'expected_result': expected_result,
+                    'headers': headers,  # 直接返回解析后的字典，而不是字符串
+                    'params': case.case_params,
+                    'body': body,  # 直接返回解析后的字典
+                    'expected_result': expected_result,  # 直接返回解析后的字典
                     'assertions': case.case_assert_contents,
                     'creator': {
                         'id': case.creator.id if case.creator else None,
@@ -108,12 +131,12 @@ class TestCaseView(APIView):
             case_name = request.data.get('title')
             case_path = request.data.get('api_path')
             case_body = request.data.get('body')
-            case_headers = request.data.get('headers')
+            case_headers = self._process_headers(request.data.get('headers'))
             case_method = request.data.get('method')
             case_assertions = request.data.get('assertions')
             case_params = request.data.get('params')
             priority_map = {'低': 0, '中': 1, '高': 2}
-            case_priority = priority_map.get(request.data.get('priority'), 0)  # 将中文优先级转换为数字
+            case_priority = priority_map.get(request.data.get('priority'), 0)
             project_id = request.data.get('project_id')
             expected_result = request.data.get('expected_result')
 
@@ -122,19 +145,19 @@ class TestCaseView(APIView):
             test_case = TestCase.objects.create(
                 case_name=case_name,
                 case_path=case_path,
-                case_description='',  # 默认空描述
+                case_description='',
                 case_requests_body=case_body,
-                case_request_headers=case_headers,
+                case_request_headers=case_headers,  # 使用处理后的headers
                 case_request_method=case_method,
-                case_assert_type='contains',  # 默认断言类型
+                case_assert_type='contains',
                 case_assert_contents=case_assertions,
                 case_priority=case_priority,
-                case_status=0,  # 默认未执行
-                case_precondition='',  # 默认空前置条件
+                case_status=0,
+                case_precondition='',
                 case_expect_result=expected_result,
                 project=project,
                 creator=request.user,
-                last_execution_result='not_run'  # 默认未执行
+                last_execution_result='not_run'
             )
 
             return JsonResponse({
@@ -159,6 +182,54 @@ class TestCaseView(APIView):
                 'data': None
             })
 
+    def put(self, request, case_id):
+        try:
+            test_case = TestCase.objects.get(test_case_id=case_id)
+            
+            case_name = request.data.get('title')
+            case_path = request.data.get('api_path')
+            case_body = request.data.get('body')
+            case_headers = self._process_headers(request.data.get('headers'))
+            case_method = request.data.get('method')
+            case_assertions = request.data.get('assertions')
+            case_params = request.data.get('params')
+            priority_map = {'低': 0, '中': 1, '高': 2}
+            case_priority = priority_map.get(request.data.get('priority'), 0)
+            expected_result = request.data.get('expected_result')
+
+            test_case.case_name = case_name
+            test_case.case_path = case_path
+            test_case.case_requests_body = case_body
+            test_case.case_request_headers = case_headers  # 使用处理后的headers
+            test_case.case_request_method = case_method
+            test_case.case_assert_contents = case_assertions
+            test_case.case_priority = case_priority
+            test_case.case_expect_result = expected_result
+            
+            test_case.save()
+
+            return JsonResponse({
+                'code': 200,
+                'message': '测试用例更新成功',
+                'data': {
+                    'id': test_case.test_case_id,
+                    'name': test_case.case_name
+                }
+            })
+
+        except TestCase.DoesNotExist:
+            return JsonResponse({
+                'code': 404,
+                'message': '测试用例不存在',
+                'data': None
+            })
+        except Exception as e:
+            return JsonResponse({
+                'code': 500,
+                'message': f'更新测试用例失败：{str(e)}',
+                'data': None
+            })
+
 
 class TestEnvironmentView(APIView):
     permission_classes = [IsAuthenticated]
@@ -169,8 +240,11 @@ class TestEnvironmentView(APIView):
             variables = request.data.get("variables")
             project_id = request.data.get("project_id")
             name = request.data.get("name")
-
+            env_suite_id = request.data.get("envSuiteId")  # 获取环境套ID
+            
             project = Project.objects.get(project_id=project_id)
+            # 获取对应的环境套
+            env_cover = TestEnvironmentCover.objects.get(environment_cover_id=env_suite_id)
 
             for variable in variables:
                 if variable is not None:
@@ -183,7 +257,8 @@ class TestEnvironmentView(APIView):
                     env_data = {
                         'project': project,
                         'env_name': name,
-                        'description': description
+                        'description': description,
+                        'environment_cover': env_cover  # 添加环境套关联
                     }
 
                     # 根据key设置对应的字段值
@@ -241,9 +316,14 @@ class TestEnvironmentView(APIView):
 
         except Project.DoesNotExist:
             return Response({
-                "code": 400,
+                "code": 404,
                 "message": "项目不存在"
-            }, status=400)
+            }, status=404)
+        except TestEnvironmentCover.DoesNotExist:
+            return Response({
+                "code": 404,
+                "message": "环境套不存在"
+            }, status=404)
         except Exception as e:
             return Response({
                 "code": 400,
@@ -252,21 +332,24 @@ class TestEnvironmentView(APIView):
 
     def get(self, request, project_id):
         try:
-            # 获取指定项目的所有环境变量
+            # 获取指定项目的所有环境变量，按环境套分组
             environments = TestEnvironment.objects.filter(
                 project_id=project_id
             ).order_by('environment_id')
 
-            # 按环境名称分组整理数据
+            # 按环境套分组整理数据
             env_data = {}
             for env in environments:
-                if env.env_name not in env_data:
-                    env_data[env.env_name] = {
+                env_suite_id = env.environment_cover.environment_cover_id if env.environment_cover else None
+                env_name = env.env_name
+                
+                # 如果这个环境套还没有记录，创建一个新的记录
+                if env_name not in env_data:
+                    env_data[env_name] = {
                         'id': env.environment_id,
                         'name': env.env_name,
-                        'project_id': env.project_id,
-                        'create_time': env.project.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                        'update_time': env.project.updated_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        'description': env.description,
+                        'env_suite_id': env_suite_id,
                         'variables': []
                     }
 
@@ -291,11 +374,11 @@ class TestEnvironmentView(APIView):
                 for field, desc in fields:
                     value = getattr(env, field)
                     if value:  # 只添加非空值
-                        env_data[env.env_name]['variables'].append({
+                        env_data[env_name]['variables'].append({
                             'id': env.environment_id,
                             'key': field,
                             'value': str(value),
-                            'description': desc
+                            'description': env.description or desc
                         })
 
             return JsonResponse({
@@ -306,13 +389,15 @@ class TestEnvironmentView(APIView):
 
         except Project.DoesNotExist:
             return JsonResponse({
-                'code': 400,
-                'message': '项目不存在'
-            }, status=400)
+                'code': 404,
+                'message': '项目不存在',
+                'data': []
+            }, status=404)
         except Exception as e:
             return JsonResponse({
                 'code': 400,
-                'message': f'获取环境变量失败：{str(e)}'
+                'message': f'获取环境变量失败：{str(e)}',
+                'data': []
             }, status=400)
 
     def put(self, request, env_id):
@@ -491,7 +576,7 @@ class TestCaseImportView(APIView):
                         'case_status': '0',
                         'case_request_headers': self.ensure_json_format(row.get('请求头', '')),
                         'case_params': self.ensure_json_format(row.get('请求参数', '')),
-                        'case_requests_body': self.ensure_json_format(row.get('请求体', '')),
+                        'case_requests_body': self.ensure_json_format(row.get('��求体', '')),
                         'case_assert_contents': row.get('断言', '$.code=200'),
                         'case_description': row.get('描述', '从Excel导入的测试用例'),
                         'case_expect_result': row.get('预期结果', '')
@@ -571,3 +656,73 @@ class TestCaseImportView(APIView):
             return '{}'
         except (json.JSONDecodeError, TypeError):
             return '{}'
+
+
+class TestEnvironmentCoverView(APIView):
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+
+    def post(self, request):
+        try:
+            project_id = request.data.get('projectId')
+            name = request.data.get('name')
+            description = request.data.get('description')
+            project = Project.objects.get(project_id=project_id)
+            environment_cover = TestEnvironmentCover.objects.create(
+                project=project,
+                environment_name=name,
+                environment_description=description
+            )
+            return JsonResponse({
+                'code': 200,
+                'message': '环境套创建成功',
+            })
+        except Project.DoesNotExist:
+            return JsonResponse({
+                'code': 400,
+                'message': '项目不存在'
+            })
+        except Exception as e:
+            return JsonResponse({
+                'code': 500,
+                'message': f'环境套创建失败：{str(e)}'
+            })
+
+    def get(self, request, project_id):
+        try:
+            project = Project.objects.get(project_id=project_id)
+            environment_covers = TestEnvironmentCover.objects.filter(project=project)
+
+            # 准备返回数据
+            cover_data = []
+            for cover in environment_covers:
+                cover_data.append({
+                    'id': cover.environment_cover_id,
+                    'name': cover.environment_name,
+                    'description': cover.environment_description,
+                    'project_id': cover.project.project_id,
+                    'create_time': cover.create_time.strftime('%Y-%m-%d %H:%M:%S') if cover.create_time else None,
+                    'update_time': cover.update_time.strftime('%Y-%m-%d %H:%M:%S') if cover.update_time else None
+                })
+
+            return JsonResponse({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'total': len(cover_data),
+                    'items': cover_data
+                }
+            })
+
+        except Project.DoesNotExist:
+            return JsonResponse({
+                'code': 404,
+                'message': '项目不存在',
+                'data': None
+            })
+        except Exception as e:
+            return JsonResponse({
+                'code': 500,
+                'message': f'获取环境套列表失败：{str(e)}',
+                'data': None
+            })
