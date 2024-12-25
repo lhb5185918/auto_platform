@@ -85,6 +85,7 @@ class TestEnvironment(models.Model):
         return self.env_name
 
 
+
 class TestEnvironmentCover(models.Model):
     environment_cover_id = models.AutoField(primary_key=True, verbose_name='环境套id')
     environment_name = models.CharField(max_length=255, verbose_name='环境名称')
@@ -112,9 +113,8 @@ class TestResult(models.Model):
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
     error_message = models.TextField(verbose_name='错误信息', null=True, blank=True)
     duration = models.FloatField(verbose_name='执行时长', help_text='单位：秒', default=0)
-    environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True, 
-                                  related_name='test_results', verbose_name='执行环境')
+    environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True,
+                                    related_name='test_results', verbose_name='执行环境')
 
     def __str__(self):
         return f"{self.case.case_name} - {self.execution_time}"
-

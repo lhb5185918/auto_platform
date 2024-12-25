@@ -368,7 +368,7 @@ class TestEnvironmentView(APIView):
                     ('time_out', '超时时间'),
                     ('content_type', '内容类型'),
                     ('charset', '字符集'),
-                    ('version', '版本号')
+                    ('version', '版本号'),
                 ]
 
                 for field, desc in fields:
