@@ -84,11 +84,11 @@ DATABASES = {
         'NAME': 'test_platform',
         'USER': 'root',
         'PASSWORD': '123456',
-        'HOST': '47.94.195.221',  # Or an IP Address that your DB is hosted on
+        'HOST': '47.94.195.221',
         'PORT': '33506',
         'OPTIONS': {
             'charset': 'utf8mb4',
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES', NAMES 'utf8mb4'"
+            'init_command': 'SET NAMES utf8mb4',
         }
     }
 }
@@ -116,7 +116,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Shanghai'
 
 USE_I18N = True
 

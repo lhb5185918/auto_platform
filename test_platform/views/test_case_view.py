@@ -46,84 +46,111 @@ class TestCaseView(APIView):
 
     def get(self, request, project_id):
         try:
-            page = request.GET.get('page')
-            page_size = request.GET.get('pageSize')
-            page = int(page) if page is not None else 1
-            page_size = int(page_size) if page_size is not None else 10
+            # 获取查询参数
+            page = int(request.GET.get('page', 1))
+            page_size = int(request.GET.get('pageSize', 10))
+            keyword = request.GET.get('keyword', '')
+            status = request.GET.get('status', '')
+            priority = request.GET.get('priority', '')
 
-            test_cases = TestCase.objects.filter(project_id=project_id).order_by('-create_time')
-            paginator = Paginator(test_cases, page_size)
-            current_page = paginator.page(page)
+            # 构建基础查询
+            queryset = TestCase.objects.filter(project_id=project_id)
+
+            # 关键字搜索（标题）
+            if keyword:
+                queryset = queryset.filter(case_name__icontains=keyword)
+
+            # 状态过滤
+            if status:
+                if status == '未执行':
+                    queryset = queryset.filter(
+                        Q(last_execution_result='not_run') |
+                        Q(last_execution_result__isnull=True)
+                    )
+                elif status == '通过':
+                    queryset = queryset.filter(last_execution_result='pass')
+                elif status == '失败':
+                    queryset = queryset.filter(last_execution_result='fail')
+                elif status == '错误':
+                    queryset = queryset.filter(last_execution_result='error')
+
+            # 优先级过滤
+            if priority:
+                priority_map = {
+                    '高': 2,
+                    '中': 1,
+                    '低': 0
+                }
+                if priority in priority_map:
+                    queryset = queryset.filter(case_priority=priority_map[priority])
+
+            # 按创建时间倒序排序
+            queryset = queryset.order_by('-create_time')
+
+            # 计算总数
+            total = queryset.count()
+
+            # 分页
+            start = (page - 1) * page_size
+            end = start + page_size
+            test_cases = queryset[start:end]
+
+            # 按原有格式构建返回数据
             test_cases_data = []
-
-            # 优先级映射
-            priority_map = {0: '低', 1: '中', 2: '高'}
-            # 状态映射
-            status_map = {
-                'passed': '通过',
-                'failed': '失败',
-                'blocked': '阻塞',
-                'not_run': '未执行'
-            }
-
-            for case in current_page.object_list:
-                # 处理headers
+            for test_case in test_cases:
+                # 处理 headers
                 try:
-                    headers = json.loads(case.case_request_headers) if case.case_request_headers else {}
+                    headers = json.loads(test_case.case_request_headers) if test_case.case_request_headers else {}
                 except json.JSONDecodeError:
                     headers = {}
 
-                # 处理body
+                # 处理 body
                 try:
-                    body = json.loads(case.case_requests_body) if case.case_requests_body else {}
+                    body = json.loads(test_case.case_requests_body) if test_case.case_requests_body else {}
                 except json.JSONDecodeError:
                     body = {}
 
-                # 处理expected_result
+                # 处理 expected_result
                 try:
-                    expected_result = json.loads(case.case_expect_result) if case.case_expect_result else {}
+                    expected_result = json.loads(test_case.case_expect_result) if test_case.case_expect_result else {}
                 except json.JSONDecodeError:
                     expected_result = {}
 
                 test_cases_data.append({
-                    'case_id': case.test_case_id,
-                    'title': case.case_name,
-                    'api_path': case.case_path,
-                    'method': case.case_request_method,
-                    'priority': priority_map.get(case.case_priority, '低'),
-                    'status': status_map.get(case.last_execution_result, '未执行'),
-                    'headers': headers,  # 直接返回解析后的字典，而不是字符串
-                    'params': case.case_params,
-                    'body': body,  # 直接返回解析后的字典
-                    'expected_result': expected_result,  # 直接返回解析后的字典
-                    'assertions': case.case_assert_contents,
+                    'case_id': test_case.test_case_id,
+                    'title': test_case.case_name,
+                    'api_path': test_case.case_path,
+                    'method': test_case.case_request_method,
+                    'priority': test_case.get_case_priority_display(),
+                    'status': '未执行' if test_case.last_execution_result in ['not_run', None] else test_case.last_execution_result,
+                    'headers': headers,
+                    'params': test_case.case_params or '',
+                    'body': body,
+                    'expected_result': expected_result,
+                    'assertions': test_case.case_assert_contents or '',
                     'creator': {
-                        'id': case.creator.id if case.creator else None,
-                        'username': case.creator.username if case.creator else None
+                        'id': test_case.creator.id if test_case.creator else None,
+                        'username': test_case.creator.username if test_case.creator else None
                     },
-                    'create_time': case.create_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'update_time': case.update_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'last_execution_time': case.last_executed_at.strftime(
-                        '%Y-%m-%d %H:%M:%S') if case.last_executed_at else None
+                    'create_time': test_case.create_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'update_time': test_case.update_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'last_execution_time': test_case.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if test_case.last_executed_at else None
                 })
 
             return JsonResponse({
                 'code': 200,
                 'message': 'success',
                 'data': {
-                    'total': paginator.count,
+                    'total': total,
                     'testCases': test_cases_data
                 }
             })
 
         except Exception as e:
             return JsonResponse({
-                'code': 200,
-                'message': 'success',
-                'data': {
-                    'total': 0,
-                    'testCases': []
-                }
+                'code': 500,
+                'message': str(e),
+                'data': None
             })
 
     def post(self, request):
@@ -576,7 +603,7 @@ class TestCaseImportView(APIView):
                         'case_status': '0',
                         'case_request_headers': self.ensure_json_format(row.get('请求头', '')),
                         'case_params': self.ensure_json_format(row.get('请求参数', '')),
-                        'case_requests_body': self.ensure_json_format(row.get('��求体', '')),
+                        'case_requests_body': self.ensure_json_format(row.get('请求体', '')),
                         'case_assert_contents': row.get('断言', '$.code=200'),
                         'case_description': row.get('描述', '从Excel导入的测试用例'),
                         'case_expect_result': row.get('预期结果', '')
