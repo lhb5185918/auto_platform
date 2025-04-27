@@ -39,6 +39,9 @@ class TestCase(models.Model):
     case_assert_type = models.CharField(max_length=50, verbose_name='断言类型', null=True, blank=True,
                                         db_comment='断言的类型')
     case_assert_contents = models.TextField(verbose_name='断言内容', db_comment='断言的具体内容')
+    case_extractors = models.TextField(verbose_name='提取器', null=True, blank=True, db_comment='测试结果提取器配置')
+    case_tests = models.TextField(verbose_name='测试断言', null=True, blank=True, db_comment='测试断言配置')
+    last_assertion_results = models.TextField(verbose_name='最后断言结果', null=True, blank=True, db_comment='最后一次执行的断言结果')
     create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间', db_comment='测试用例的创建时间')
     update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间', db_comment='测试用例的最后更新时间')
     last_executed_at = models.DateTimeField(null=True, blank=True, verbose_name='最后执行时间')
@@ -112,3 +115,73 @@ class TestResult(models.Model):
 
     def __str__(self):
         return f"{self.case.case_name} - {self.execution_time}"
+
+
+class TestSuite(models.Model):
+    """测试套件模型"""
+    suite_id = models.AutoField(primary_key=True, verbose_name='套件ID')
+    name = models.CharField(max_length=255, verbose_name='套件名称')
+    description = models.TextField(verbose_name='套件描述', null=True, blank=True)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='test_suites', verbose_name='所属项目')
+    environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='test_suites', verbose_name='执行环境')
+    creator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='test_suites',
+                                verbose_name='创建者')
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    last_executed_at = models.DateTimeField(null=True, blank=True, verbose_name='最后执行时间')
+    last_execution_status = models.CharField(max_length=20, default='not_run', verbose_name='最后执行状态')
+
+    def __str__(self):
+        return self.name
+
+
+class TestSuiteCase(models.Model):
+    """测试套件-测试用例关联模型"""
+    id = models.AutoField(primary_key=True)
+    suite = models.ForeignKey(TestSuite, on_delete=models.CASCADE, related_name='suite_cases', verbose_name='测试套件')
+    # 用于存储原始测试用例的ID
+    original_case_id = models.IntegerField(verbose_name='原始用例ID')
+    # 测试用例的克隆/自定义数据
+    case_data = models.TextField(verbose_name='用例数据', help_text='JSON格式的测试用例数据')
+    order = models.IntegerField(default=0, verbose_name='执行顺序')
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        ordering = ['order']
+        unique_together = ['suite', 'original_case_id']
+
+    def __str__(self):
+        return f"{self.suite.name} - 用例ID:{self.original_case_id} (顺序:{self.order})"
+
+
+class TestSuiteResult(models.Model):
+    """测试套件执行结果模型"""
+    result_id = models.AutoField(primary_key=True, verbose_name='结果ID')
+    suite = models.ForeignKey(TestSuite, on_delete=models.CASCADE, related_name='execution_results', verbose_name='测试套件')
+    execution_time = models.DateTimeField(verbose_name='执行时间')
+    status = models.CharField(max_length=20, verbose_name='执行状态', choices=[
+        ('pass', '通过'),
+        ('fail', '失败'),
+        ('error', '错误'),
+        ('skip', '跳过'),
+        ('partial', '部分通过')
+    ])
+    duration = models.FloatField(verbose_name='执行时长', help_text='单位：秒', default=0)
+    total_cases = models.IntegerField(verbose_name='用例总数', default=0)
+    passed_cases = models.IntegerField(verbose_name='通过用例数', default=0)
+    failed_cases = models.IntegerField(verbose_name='失败用例数', default=0)
+    error_cases = models.IntegerField(verbose_name='错误用例数', default=0)
+    skipped_cases = models.IntegerField(verbose_name='跳过用例数', default=0)
+    pass_rate = models.FloatField(verbose_name='通过率', default=0)
+    result_data = models.TextField(verbose_name='结果数据', help_text='JSON格式的详细结果数据')
+    environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='suite_results', verbose_name='执行环境')
+    creator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='suite_results',
+                               verbose_name='执行者')
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    def __str__(self):
+        return f"{self.suite.name} - {self.execution_time}"

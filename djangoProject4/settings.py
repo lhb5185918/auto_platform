@@ -52,6 +52,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'test_platform.middleware.TimezoneMiddleware',
 ]
 
 ROOT_URLCONF = 'djangoProject4.urls'
@@ -82,14 +83,15 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'test_platform',
-        'USER': 'root',
-        'PASSWORD': '123456',
-        'HOST': '47.94.195.221',
-        'PORT': '33506',
+        'USER': 'root1',
+        'PASSWORD': 'Lhx7758521003!',
+        'HOST': 'rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com',
+        'PORT': '3306',
         'OPTIONS': {
             'charset': 'utf8mb4',
             'init_command': 'SET NAMES utf8mb4',
-        }
+        },
+        'TIME_ZONE': 'Asia/Shanghai',
     }
 }
 
