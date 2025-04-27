@@ -85,30 +85,43 @@ class TestCaseView(APIView):
 
     def _process_extractors(self, extractors):
         """处理提取器数据的通用方法"""
+        print(f"_process_extractors收到的原始数据: {extractors}, 类型: {type(extractors)}")
+        
         if not extractors:  # 如果extractors为None或空
-            return '{}'
+            print("提取器数据为空，返回空JSON数组")
+            return '[]'
             
         if isinstance(extractors, str):
             try:
                 # 如果是字符串，尝试解析为JSON以验证格式
-                json.loads(extractors)
+                parsed = json.loads(extractors)
+                print(f"成功解析提取器字符串为: {parsed}")
                 # 如果是有效的JSON字符串，直接返回
                 return extractors
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                print(f"JSON解析失败: {str(e)}")
                 # 如果解析失败，尝试其他方式解析
                 try:
                     import ast
                     # 尝试作为Python表达式解析
                     extractors_obj = ast.literal_eval(extractors)
+                    print(f"通过ast解析成功: {extractors_obj}")
                     return json.dumps(extractors_obj)
-                except:
-                    return '{}'
-        elif isinstance(extractors, list) or isinstance(extractors, dict):
-            # 如果是列表或字典，转换为JSON字符串
+                except Exception as e:
+                    print(f"ast解析也失败: {str(e)}")
+                    return '[]'
+        elif isinstance(extractors, list):
+            # 如果是列表，转换为JSON字符串
+            print(f"提取器是列表，转换为JSON")
             return json.dumps(extractors)
+        elif isinstance(extractors, dict):
+            # 如果是字典（单个提取器），封装为列表后转换为JSON字符串
+            print(f"提取器是字典，封装为列表后转换为JSON")
+            return json.dumps([extractors])
         
-        # 其他情况返回空JSON对象
-        return '{}'
+        # 其他情况返回空JSON数组
+        print(f"提取器是其他类型: {type(extractors)}，返回空数组")
+        return '[]'
 
     def _process_tests(self, tests):
         """处理测试断言数据的通用方法"""
@@ -378,16 +391,25 @@ class TestCaseView(APIView):
             priority_map = {'低': 0, '中': 1, '高': 2}
             case_priority = priority_map.get(request.data.get('priority'), 0)
             expected_result = request.data.get('expected_result', '{}')  # 提供空JSON作为默认值
-            case_extractors = self._process_extractors(request.data.get('extractors'))
+            
+            # 明确获取并处理extractors字段
+            raw_extractors = request.data.get('extractors', [])
+            print(f"原始请求中的extractors: {raw_extractors}")
+            print(f"extractors类型: {type(raw_extractors)}")
+            
+            # 确保extractors是合适的格式
+            if isinstance(raw_extractors, list):
+                case_extractors = json.dumps(raw_extractors)
+            else:
+                case_extractors = self._process_extractors(raw_extractors)
+            
+            print(f"处理后的extractors: {case_extractors}")
+            
             case_tests = self._process_tests(request.data.get('tests'))
             
             # 打印调试信息
             print(f"请求的body: {request.data.get('body')}")
             print(f"处理后的body: {case_body}")
-            print(f"请求的extractors: {request.data.get('extractors')}")
-            print(f"处理后的extractors: {case_extractors}")
-            print(f"请求的tests: {request.data.get('tests')}")
-            print(f"处理后的tests: {case_tests}")
 
             test_case.case_name = case_name
             test_case.case_path = case_path
@@ -402,13 +424,26 @@ class TestCaseView(APIView):
             test_case.case_tests = case_tests  # 更新测试断言
             
             test_case.save()
+            
+            # 验证存储是否成功
+            updated_case = TestCase.objects.get(test_case_id=case_id)
+            print(f"保存后的extractors: {updated_case.case_extractors}")
+            
+            # 尝试解析存储的extractors，确认是否可以正确读取
+            try:
+                saved_extractors = json.loads(updated_case.case_extractors) if updated_case.case_extractors else []
+                print(f"解析后的extractors: {saved_extractors}")
+            except json.JSONDecodeError as e:
+                print(f"解析保存后的extractors失败: {str(e)}")
+                saved_extractors = []
 
             return JsonResponse({
                 'code': 200,
                 'message': '测试用例更新成功',
                 'data': {
                     'id': test_case.test_case_id,
-                    'name': test_case.case_name
+                    'name': test_case.case_name,
+                    'extractors': saved_extractors  # 在响应中返回提取器数据，便于验证
                 }
             })
 
@@ -419,6 +454,9 @@ class TestCaseView(APIView):
                 'data': None
             })
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"更新测试用例时出错: {str(e)}")
             return JsonResponse({
                 'code': 500,
                 'message': f'更新测试用例失败：{str(e)}',
@@ -1093,6 +1131,9 @@ class TestSuiteView(APIView):
                 total_duration = 0
                 execution_results = []
                 
+                # 初始化变量上下文
+                context = {}
+                
                 # 记录开始时间
                 suite_start_time = timezone.now()
                 
@@ -1102,6 +1143,26 @@ class TestSuiteView(APIView):
                         # 解析测试用例数据
                         case_data = json.loads(suite_case.case_data)
                         original_case_id = suite_case.original_case_id
+                        
+                        # 替换变量
+                        if context:
+                            # 导入变量替换函数
+                            from test_platform.views.execute import replace_variables
+                            
+                            # 替换URL中的变量
+                            api_path = replace_variables(case_data.get('api_path', ''), context)
+                            # 替换请求头中的变量
+                            headers = replace_variables(case_data.get('headers', {}), context)
+                            # 替换请求参数中的变量
+                            params = replace_variables(case_data.get('params', {}), context)
+                            # 替换请求体中的变量
+                            body = replace_variables(case_data.get('body', {}), context)
+                            
+                            # 更新case_data
+                            case_data['api_path'] = api_path
+                            case_data['headers'] = headers
+                            case_data['params'] = params
+                            case_data['body'] = body
                         
                         # 构建执行请求数据
                         execute_data = {
@@ -1114,11 +1175,13 @@ class TestSuiteView(APIView):
                             'body_type': case_data.get('body_type', 'raw'),
                             'assertions': case_data.get('assertions', ''),
                             'tests': case_data.get('tests', []),
-                            'extractors': case_data.get('extractors', [])
+                            'extractors': case_data.get('extractors', []),
+                            'context': context  # 传递当前变量上下文
                         }
                         
                         print(f"执行测试用例 {index + 1}/{total_cases}: ID={original_case_id}, 名称={case_data.get('title', '')}")
                         print(f"请求方法: {execute_data['method']}")
+                        print(f"当前变量上下文: {context}")
                         
                         # 模拟请求对象
                         class MockRequest:
@@ -1204,6 +1267,20 @@ class TestSuiteView(APIView):
                             # 尝试解析响应内容
                             try:
                                 response_data = json.loads(response.content)
+                                
+                                # 获取提取的变量，更新上下文
+                                if response_data.get('success') and 'extractors' in response_data.get('data', {}):
+                                    extractors_data = response_data['data']['extractors']
+                                    new_vars = extractors_data.get('extracted_variables', {})
+                                    if new_vars:
+                                        print(f"提取到变量: {new_vars}")
+                                        context.update(new_vars)
+                                    
+                                    # 更新整个上下文
+                                    new_context = extractors_data.get('context', {})
+                                    if new_context:
+                                        context = new_context
+                                        print(f"更新后的上下文: {context}")
                             except json.JSONDecodeError:
                                 # 如果无法解析为JSON，则使用原始文本
                                 response_text = response.content.decode('utf-8', errors='ignore')
@@ -1288,7 +1365,8 @@ class TestSuiteView(APIView):
                             'request': execute_data,
                             'response': result_data.get('response', {}),
                             'response_headers': result_data.get('response_headers', {}),  # 单独保存响应头
-                            'error': error_message
+                            'error': error_message,
+                            'extractors': result_data.get('extractors', {})  # 添加提取器信息
                         })
                         
                     except json.JSONDecodeError as e:
@@ -1512,7 +1590,24 @@ class TestSuiteView(APIView):
                 
                 for suite_case in suite_cases:
                     try:
+                        # 解析存储的case_data
                         case_data = json.loads(suite_case.case_data)
+                        
+                        # 如果没有extractors字段，尝试从原始用例中获取
+                        if 'extractors' not in case_data:
+                            try:
+                                original_case = TestCase.objects.get(test_case_id=suite_case.original_case_id)
+                                if original_case.case_extractors:
+                                    try:
+                                        extractors = json.loads(original_case.case_extractors)
+                                        case_data['extractors'] = extractors
+                                    except json.JSONDecodeError:
+                                        case_data['extractors'] = []
+                                else:
+                                    case_data['extractors'] = []
+                            except TestCase.DoesNotExist:
+                                case_data['extractors'] = []
+                        
                         cases_data.append(case_data)
                     except json.JSONDecodeError:
                         # 如果用例数据无法解析，则跳过
@@ -1524,11 +1619,16 @@ class TestSuiteView(APIView):
                     'name': test_suite.name,
                     'description': test_suite.description,
                     'project_id': test_suite.project.project_id,
+                    'project_name': test_suite.project.name,  # 添加项目名称
                     'env_id': test_suite.environment.environment_id if test_suite.environment else None,
-                    'creator': {
-                        'id': test_suite.creator.id if test_suite.creator else None,
-                        'username': test_suite.creator.username if test_suite.creator else None
-                    },
+                    'environment': {
+                        'env_id': test_suite.environment.environment_id if test_suite.environment else None,
+                        'name': test_suite.environment.env_name if test_suite.environment else '',
+                        'host': test_suite.environment.host if test_suite.environment else '',
+                        'port': test_suite.environment.port if test_suite.environment else 0,
+                        'base_url': test_suite.environment.base_url if test_suite.environment else ''
+                    } if test_suite.environment else None,
+                    'creator': test_suite.creator.username if test_suite.creator else None,
                     'create_time': test_suite.create_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'update_time': test_suite.update_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'last_executed_at': test_suite.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if test_suite.last_executed_at else None,

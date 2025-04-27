@@ -117,55 +117,113 @@ def get_suite_detail(request, suite_id):
         # 准备用例数据
         case_list = []
         for suite_case in suite_cases:
-            # 尝试获取原始测试用例
+            # 获取用例数据，优先使用套件中的case_data
             try:
-                case = TestCase.objects.get(test_case_id=suite_case.original_case_id)
-                
-                # 解析 JSON 字段
-                try:
-                    headers = json.loads(case.case_request_headers) if case.case_request_headers else {}
-                except json.JSONDecodeError:
-                    headers = {}
-                
-                try:
-                    body = json.loads(case.case_requests_body) if case.case_requests_body else {}
-                except json.JSONDecodeError:
-                    body = case.case_requests_body
-                
-                try:
-                    assert_contents = json.loads(case.case_assert_contents) if case.case_assert_contents else {}
-                except json.JSONDecodeError:
-                    assert_contents = case.case_assert_contents
-                
-                # 添加用例信息到列表
-                case_list.append({
-                    'case_id': case.test_case_id,
-                    'title': case.case_name,
-                    'method': case.case_request_method,
-                    'api_path': case.case_path,
-                    'priority': case.case_priority,
-                    'description': case.case_description,
-                    'status': case.case_status,
-                    'last_executed_at': case.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if case.last_executed_at else None,
-                    'last_execution_result': case.last_execution_result,
-                    'headers': headers,
-                    'body': body,
-                    'case_assert_contents': assert_contents
-                })
-            except TestCase.DoesNotExist:
-                # 如果原始用例不存在，使用关联表中的数据
                 case_data = json.loads(suite_case.case_data) if suite_case.case_data else {}
+            except json.JSONDecodeError:
+                case_data = {}
                 
+            if case_data:
+                # 如果套件中有数据，直接使用
                 case_list.append({
                     'case_id': suite_case.original_case_id,
-                    'title': case_data.get('name', '未知用例'),
+                    'title': case_data.get('title', f'用例{suite_case.original_case_id}'),
                     'method': case_data.get('method', 'GET'),
                     'api_path': case_data.get('api_path', ''),
                     'priority': case_data.get('priority', 0),
                     'description': case_data.get('description', ''),
                     'status': case_data.get('status', 0),
-                    'is_missing': True  # 标记原始用例不存在
+                    'headers': case_data.get('headers', {}),
+                    'body': case_data.get('body', {}),
+                    'params': case_data.get('params', {}),
+                    'expected': case_data.get('expected', ''),
+                    'extractors': case_data.get('extractors', [])
                 })
+            else:
+                # 如果套件中没有数据，尝试从原始测试用例获取
+                try:
+                    case = TestCase.objects.get(test_case_id=suite_case.original_case_id)
+                    
+                    # 解析 JSON 字段
+                    try:
+                        headers = json.loads(case.case_request_headers) if case.case_request_headers else {}
+                    except json.JSONDecodeError:
+                        headers = {}
+                    
+                    try:
+                        body = json.loads(case.case_requests_body) if case.case_requests_body else {}
+                    except json.JSONDecodeError:
+                        body = case.case_requests_body
+                    
+                    try:
+                        params = json.loads(case.case_params) if case.case_params else {}
+                    except json.JSONDecodeError:
+                        params = {}
+                    
+                    try:
+                        assert_contents = json.loads(case.case_assert_contents) if case.case_assert_contents else {}
+                    except json.JSONDecodeError:
+                        assert_contents = case.case_assert_contents
+                    
+                    # 解析提取器字段
+                    try:
+                        extractors = json.loads(case.case_extractors) if case.case_extractors else []
+                    except json.JSONDecodeError:
+                        extractors = []
+                    
+                    # 添加用例信息到列表
+                    case_data = {
+                        'title': case.case_name,
+                        'method': case.case_request_method,
+                        'api_path': case.case_path,
+                        'headers': headers,
+                        'params': params,
+                        'body': body,
+                        'expected': case.case_expect_result,
+                        'priority': case.case_priority,
+                        'description': case.case_description,
+                        'status': case.case_status,
+                        'extractors': extractors
+                    }
+                    
+                    # 将数据保存到测试套件中，便于下次使用
+                    suite_case.case_data = json.dumps(case_data)
+                    suite_case.save()
+                    
+                    case_list.append({
+                        'case_id': case.test_case_id,
+                        'title': case.case_name,
+                        'method': case.case_request_method,
+                        'api_path': case.case_path,
+                        'priority': case.case_priority,
+                        'description': case.case_description,
+                        'status': case.case_status,
+                        'last_executed_at': case.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if case.last_executed_at else None,
+                        'last_execution_result': case.last_execution_result,
+                        'headers': headers,
+                        'body': body,
+                        'params': params,
+                        'expected': case.case_expect_result,
+                        'case_assert_contents': assert_contents,
+                        'extractors': extractors
+                    })
+                except TestCase.DoesNotExist:
+                    # 如果原始用例不存在，使用最小数据集
+                    case_list.append({
+                        'case_id': suite_case.original_case_id,
+                        'title': f'未知用例 {suite_case.original_case_id}',
+                        'method': 'GET',
+                        'api_path': '',
+                        'priority': 0,
+                        'description': '',
+                        'status': 0,
+                        'headers': {},
+                        'body': {},
+                        'params': {},
+                        'expected': '',
+                        'extractors': [],
+                        'is_missing': True  # 标记原始用例不存在
+                    })
         
         # 准备环境信息
         env_info = None
@@ -214,18 +272,11 @@ def get_suite_detail(request, suite_id):
 def update_suite_case(request, case_id):
     """
     更新测试套件中的测试用例
+    
+    该接口只会更新测试套件中的用例数据(TestSuiteCase.case_data)，
+    不会修改原始测试用例表中的数据
     """
     try:
-        # 获取测试用例
-        try:
-            test_case = TestCase.objects.get(test_case_id=case_id)
-        except TestCase.DoesNotExist:
-            return JsonResponse({
-                'code': 404,
-                'message': '测试用例不存在',
-                'data': None
-            }, status=404, charset='utf-8')
-        
         # 获取请求数据
         try:
             body_data = json.loads(request.body) if request.body else {}
@@ -245,139 +296,78 @@ def update_suite_case(request, case_id):
         case_expected = body_data.get('expected', '')
         case_body = body_data.get('body', {})
         case_priority = body_data.get('priority', '')
+        case_extractors = body_data.get('extractors', [])
         
-        # 可选字段：测试套件ID
+        # 获取套件ID - 这是必须的
         suite_id = body_data.get('suite_id')
-        
-        # 更新测试用例基本信息（原始用例）
-        test_case.case_name = case_title
-        test_case.case_request_method = case_method
-        test_case.case_path = case_api_path
-        
-        # 处理字段格式
-        # Headers 处理 - 确保以 JSON 对象格式存储
-        if isinstance(case_headers, dict) or isinstance(case_headers, list):
-            # 存储为 JSON 字符串 - 直接转换
-            test_case.case_request_headers = json.dumps(case_headers)
-        elif isinstance(case_headers, str):
-            # 如果已经是字符串，检查是否是有效的 JSON
+        if not suite_id:
+            return JsonResponse({
+                'code': 400,
+                'message': '缺少必要参数suite_id',
+                'data': None
+            }, status=400, charset='utf-8')
+            
+        try:
+            # 查找测试套件中的用例关联记录
+            suite_case = TestSuiteCase.objects.get(suite_id=suite_id, original_case_id=case_id)
+            
+            # 尝试获取当前case_data数据以保留其他字段
             try:
-                # 尝试解析并重新序列化，确保格式统一
-                headers_obj = json.loads(case_headers)
-                test_case.case_request_headers = json.dumps(headers_obj)
+                existing_data = json.loads(suite_case.case_data) if suite_case.case_data else {}
             except json.JSONDecodeError:
-                # 不是有效的 JSON，存储为空 JSON 对象
-                test_case.case_request_headers = '{}'
-        else:
-            test_case.case_request_headers = '{}'
-        
-        # Params 处理
-        if isinstance(case_params, dict) or isinstance(case_params, list):
-            test_case.case_params = json.dumps(case_params)
-        elif isinstance(case_params, str):
-            try:
-                params_obj = json.loads(case_params)
-                test_case.case_params = json.dumps(params_obj)
-            except json.JSONDecodeError:
-                test_case.case_params = '{}'
-        else:
-            test_case.case_params = '{}'
-        
-        # Body 处理
-        if isinstance(case_body, dict) or isinstance(case_body, list):
-            test_case.case_requests_body = json.dumps(case_body)
-        elif isinstance(case_body, str):
-            # 字符串类型的 body 可能是已经格式化的 JSON 或普通文本
-            try:
-                body_obj = json.loads(case_body)
-                test_case.case_requests_body = json.dumps(body_obj)
-            except json.JSONDecodeError:
-                # 不是有效的 JSON，保留原始字符串
-                test_case.case_requests_body = case_body
-        else:
-            test_case.case_requests_body = '{}'
-        
-        # 预期结果处理
-        test_case.case_expect_result = case_expected
-        
-        # 优先级处理
-        priority_map = {'低': 0, '中': 1, '高': 2}
-        test_case.case_priority = priority_map.get(case_priority, 0)
-        
-        # 保存更新后的测试用例
-        test_case.save()
-        
-        # 如果提供了套件ID，则更新测试套件中的用例数据
-        if suite_id:
-            try:
-                # 查找测试套件中的用例关联记录
-                suite_case = TestSuiteCase.objects.get(suite_id=suite_id, original_case_id=case_id)
-                
-                # 构建用例数据 - 将 JSON 对象存储在套件用例数据中
-                case_data = {
-                    'title': case_title,
-                    'name': case_title,
-                    'method': case_method,
-                    'api_path': case_api_path,
-                    'headers': case_headers,  # 直接存储对象，不要转字符串
-                    'params': case_params,
-                    'expected': case_expected,
-                    'body': case_body,
-                    'priority': case_priority,
-                    # 保留原有数据中的其他字段
-                    'original_case_id': case_id
-                }
-                
-                # 更新套件用例数据
-                suite_case.case_data = json.dumps(case_data)
-                suite_case.save()
-                
-                # 准备返回数据
-                response_data = {
-                    'case_id': case_id,
-                    'suite_id': suite_id,
-                    'title': case_title,
-                    'headers': case_headers,  # 返回原始对象
-                    'params': case_params,
-                    'body': case_body
-                }
-                
-                return JsonResponse({
-                    'code': 200,
-                    'message': '测试套件用例更新成功',
-                    'data': response_data
-                }, charset='utf-8', json_dumps_params={'ensure_ascii': False})
-            except TestSuiteCase.DoesNotExist:
-                # 如果找不到关联记录，只更新原始用例
-                return JsonResponse({
-                    'code': 200,
-                    'message': '测试用例更新成功，但未找到关联的测试套件用例',
-                    'data': {
-                        'case_id': case_id,
-                        'title': case_title,
-                        'headers': case_headers,  # 返回原始对象
-                        'params': case_params,
-                        'body': case_body
-                    }
-                }, charset='utf-8', json_dumps_params={'ensure_ascii': False})
-        else:
-            # 如果没有提供套件ID，则只更新原始用例
+                existing_data = {}
+            
+            # 构建用例数据 - 将 JSON 对象存储在套件用例数据中
+            case_data = {
+                'title': case_title,
+                'name': case_title,
+                'method': case_method,
+                'api_path': case_api_path,
+                'headers': case_headers,
+                'params': case_params,
+                'expected': case_expected,
+                'body': case_body,
+                'priority': case_priority,
+                'extractors': case_extractors,
+                'original_case_id': case_id
+            }
+            
+            # 保留原有数据中可能存在的其他字段
+            for key in existing_data:
+                if key not in case_data:
+                    case_data[key] = existing_data[key]
+            
+            # 更新套件用例数据
+            suite_case.case_data = json.dumps(case_data)
+            suite_case.save()
+            
+            # 准备返回数据
+            response_data = {
+                'case_id': case_id,
+                'suite_id': suite_id,
+                'title': case_title,
+                'headers': case_headers,
+                'params': case_params,
+                'body': case_body,
+                'extractors': case_extractors
+            }
+            
             return JsonResponse({
                 'code': 200,
-                'message': '测试用例更新成功',
-                'data': {
-                    'case_id': case_id,
-                    'title': case_title,
-                    'headers': case_headers,  # 返回原始对象
-                    'params': case_params,
-                    'body': case_body
-                }
+                'message': '测试套件用例更新成功',
+                'data': response_data
             }, charset='utf-8', json_dumps_params={'ensure_ascii': False})
+        except TestSuiteCase.DoesNotExist:
+            return JsonResponse({
+                'code': 404,
+                'message': '未找到测试套件中的关联用例',
+                'data': None
+            }, status=404, charset='utf-8')
     
     except Exception as e:
         return JsonResponse({
             'code': 500,
-            'message': f'更新测试用例失败: {str(e)}',
+            'message': f'更新测试套件用例失败: {str(e)}',
             'data': {
                 'error': str(e)
             }
@@ -388,6 +378,178 @@ def set_timezone():
     """设置数据库会话时区为北京时间"""
     with connection.cursor() as cursor:
         cursor.execute("SET time_zone = '+08:00'")
+
+def replace_variables(data, context):
+    """
+    递归替换数据中的${变量名}为上下文中的实际值
+    
+    参数:
+        data: 要处理的数据(可以是字典、列表、字符串)
+        context: 变量上下文字典
+        
+    返回:
+        替换变量后的数据
+    """
+    if isinstance(data, dict):
+        result = {}
+        for key, value in data.items():
+            result[key] = replace_variables(value, context)
+        return result
+    elif isinstance(data, list):
+        return [replace_variables(item, context) for item in data]
+    elif isinstance(data, str):
+        # 替换字符串中的${变量名}
+        import re
+        variable_pattern = r'\${([^}]+)}'
+        matches = re.findall(variable_pattern, data)
+        
+        replaced_data = data
+        for var_name in matches:
+            if var_name in context:
+                # 替换为实际值
+                replaced_data = replaced_data.replace(f'${{{var_name}}}', str(context[var_name]))
+        return replaced_data
+    else:
+        return data
+
+def handle_variable_extraction(response_data, extractors):
+    """
+    从响应中提取变量
+    
+    参数:
+        response_data: 响应数据，可以是响应体或完整的响应信息对象
+        extractors: 提取器配置列表
+        
+    返回:
+        提取的变量字典 {变量名: 变量值}
+    """
+    extracted_vars = {}
+    
+    if not extractors or not isinstance(extractors, list):
+        return extracted_vars
+        
+    # 确定响应体
+    if isinstance(response_data, dict) and 'body' in response_data:
+        # 如果传入的是完整的响应信息对象
+        response_body = response_data.get('body', {})
+    else:
+        # 如果直接传入的是响应体
+        response_body = response_data
+        
+    for extractor in extractors:
+        if not isinstance(extractor, dict):
+            continue
+            
+        # 检查提取器是否启用
+        if not extractor.get('enabled', True):
+            continue
+            
+        name = extractor.get('name')
+        expression = extractor.get('expression')
+        extractor_type = extractor.get('type', 'jsonpath')
+        default_value = extractor.get('defaultValue', '')
+        
+        if name and expression:
+            # 根据提取器类型提取变量
+            if extractor_type == 'jsonpath':
+                import jsonpath_ng.ext as jsonpath
+                try:
+                    if isinstance(response_body, dict) or isinstance(response_body, list):
+                        json_expr = jsonpath.parse(expression)
+                        matches = [match.value for match in json_expr.find(response_body)]
+                        if matches:
+                            # 存储提取的变量
+                            extracted_vars[name] = matches[0]
+                            print(f"成功提取变量 {name} = {matches[0]}")
+                        else:
+                            # 使用默认值
+                            extracted_vars[name] = default_value
+                            print(f"未找到匹配值，使用默认值 {name} = {default_value}")
+                    else:
+                        # 如果响应体不是JSON格式，使用默认值
+                        extracted_vars[name] = default_value
+                        print(f"响应体不是JSON格式，使用默认值 {name} = {default_value}")
+                except Exception as e:
+                    print(f"提取变量失败: {str(e)}")
+                    extracted_vars[name] = default_value
+            
+            # 可以添加其他类型的提取器支持，如正则表达式等
+    
+    return extracted_vars
+
+def get_suite_case_data(suite_case):
+    """
+    从测试套件用例中获取执行所需的所有数据，优先使用套件中的case_data
+    
+    参数:
+        suite_case: TestSuiteCase对象
+        
+    返回:
+        包含完整测试用例数据的字典
+    """
+    # 尝试解析case_data
+    try:
+        case_data = json.loads(suite_case.case_data) if suite_case.case_data else {}
+    except json.JSONDecodeError:
+        case_data = {}
+    
+    # 设置必要的默认值
+    if not case_data:
+        # 如果没有套件数据，尝试从原始用例中获取数据
+        try:
+            original_case = TestCase.objects.get(test_case_id=suite_case.original_case_id)
+            
+            # 解析 JSON 字段
+            try:
+                headers = json.loads(original_case.case_request_headers) if original_case.case_request_headers else {}
+            except json.JSONDecodeError:
+                headers = {}
+            
+            try:
+                body = json.loads(original_case.case_requests_body) if original_case.case_requests_body else {}
+            except json.JSONDecodeError:
+                body = original_case.case_requests_body
+                
+            try:
+                params = json.loads(original_case.case_params) if original_case.case_params else {}
+            except json.JSONDecodeError:
+                params = {}
+                
+            try:
+                extractors = json.loads(original_case.case_extractors) if original_case.case_extractors else []
+            except json.JSONDecodeError:
+                extractors = []
+            
+            # 构建基础数据
+            case_data = {
+                'title': original_case.case_name,
+                'name': original_case.case_name,
+                'method': original_case.case_request_method,
+                'api_path': original_case.case_path,
+                'headers': headers,
+                'params': params,
+                'body': body,
+                'expected': original_case.case_expect_result,
+                'priority': original_case.case_priority,
+                'extractors': extractors,
+                'original_case_id': suite_case.original_case_id
+            }
+        except TestCase.DoesNotExist:
+            # 如果原始用例也不存在，则提供最小默认值
+            case_data = {
+                'title': f'未知用例 {suite_case.original_case_id}',
+                'method': 'GET',
+                'api_path': '',
+                'headers': {},
+                'params': {},
+                'body': {},
+                'expected': '',
+                'priority': 0,
+                'extractors': [],
+                'original_case_id': suite_case.original_case_id
+            }
+    
+    return case_data
 
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -884,7 +1046,16 @@ def execute_test_direct(request):
         case_id = test_data.get('case_id')
         api_path = test_data.get('api_path') or request.path
         
-        print(f"执行请求: 方法={method}, 路径={api_path}")
+        # 获取测试环境和变量上下文
+        env_id = test_data.get('env_id')
+        context = test_data.get('context', {})  # 从请求中获取变量上下文
+        
+        # 如果没有传入上下文，则初始化一个空的
+        if not isinstance(context, dict):
+            context = {}
+            
+        print(f"执行请求: 方法={method}, 路径={api_path}, 环境ID={env_id}")
+        print(f"当前变量上下文: {context}")
         
         # 获取测试用例对象
         try:
@@ -959,6 +1130,15 @@ def execute_test_direct(request):
                 if isinstance(item, dict) and item.get('key'):
                     form_data[item['key']] = item['value']
             body = form_data
+            
+        # 获取提取器信息
+        extractors = test_data.get('extractors', [])
+
+        # 变量替换 - 对请求数据中的${变量名}进行替换
+        api_path = replace_variables(api_path, context)
+        headers = replace_variables(headers, context)
+        params = replace_variables(params, context)
+        body = replace_variables(body, context)
 
         # 准备请求参数
         request_kwargs = {
@@ -994,6 +1174,18 @@ def execute_test_direct(request):
         except json.JSONDecodeError:
             response_data = response.text
             response_body = {'content': response.text}
+        
+        # 从响应中提取变量
+        extracted_vars = handle_variable_extraction(response_body, extractors)
+        
+        # 更新上下文变量，用于下一个请求
+        context.update(extracted_vars)
+        
+        # 添加提取的变量到结果中
+        extracted_data = {
+            'variables': extracted_vars,
+            'context': context  # 返回完整上下文，包括之前的变量
+        }
         
         # 处理测试断言
         assertion_results = []
@@ -1209,7 +1401,7 @@ def execute_test_direct(request):
         response_info = {
             'status_code': response.status_code,
             'headers': dict(response.headers),
-            'body': response_data,
+            'body': response_body,
             'response_time': duration,
             'raw_text': response.text  # 保存原始响应文本
         }
@@ -1254,6 +1446,10 @@ def execute_test_direct(request):
                 'all_passed': assertions_passed,
                 'results': assertion_results,
                 'error': assertion_error
+            },
+            'extractors': {
+                'extracted_variables': extracted_vars,
+                'context': context
             }
         }
 
@@ -1305,6 +1501,10 @@ def execute_test_direct(request):
                     'has_assertions': has_assertions,
                     'all_passed': assertions_passed,
                     'results': assertion_results
+                },
+                'extractors': {
+                    'extracted_variables': extracted_vars,
+                    'context': context
                 }
             }
         }
