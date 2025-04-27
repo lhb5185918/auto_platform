@@ -5,6 +5,8 @@ from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.models import User
 from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 
 class LoginView(APIView):
@@ -105,3 +107,44 @@ class RegisterView(APIView):
             }
         }
         )
+
+
+class UserInfoView(APIView):
+    """
+    获取用户信息的视图类
+    使用JWT认证和权限控制
+    """
+    authentication_classes = [JWTAuthentication]  # 使用JWT认证
+    permission_classes = [IsAuthenticated]  # 要求用户必须登录
+
+    def get(self, request):
+        """
+        获取当前登录用户的信息
+        :param request: HTTP请求对象
+        :return: Response对象，包含用户信息
+        """
+        try:
+            user = request.user
+            
+            # 构建用户信息响应
+            return Response({
+                "code": 200,
+                "message": "获取用户信息成功",
+                "data": {
+                    "user": {
+                        "id": user.id,
+                        "username": user.username,
+                        "email": user.email,
+                        "avatar": user.profile.avatar if hasattr(user, 'profile') else None,
+                        "last_login": user.last_login,
+                        "date_joined": user.date_joined
+                    }
+                }
+            })
+        except Exception as e:
+            print("获取用户信息错误:", str(e))
+            return Response({
+                "code": 500,
+                "message": f"获取用户信息失败：{str(e)}",
+                "data": None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
