@@ -173,3 +173,20 @@ SIMPLE_JWT = {
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Celery配置
+CELERY_BROKER_URL = 'redis://47.94.195.221:6379/0'  # 使用Redis作为消息代理
+CELERY_RESULT_BACKEND = 'redis://47.94.195.221:6379/0'  # 使用Redis存储任务结果
+CELERY_ACCEPT_CONTENT = ['json']  # 指定接受的内容类型
+CELERY_TASK_SERIALIZER = 'json'  # 任务序列化和反序列化使用JSON
+CELERY_RESULT_SERIALIZER = 'json'  # 结果序列化为JSON
+CELERY_TIMEZONE = TIME_ZONE  # 使用与Django相同的时区
+CELERY_IMPORTS = ('test_platform.tasks',)  # 显式导入任务模块
+
+# 定时任务配置
+CELERY_BEAT_SCHEDULE = {
+    'check-scheduled-test-plans': {
+        'task': 'test_platform.tasks.check_scheduled_test_plans',
+        'schedule': 60.0,  # 每分钟检查一次
+    },
+}

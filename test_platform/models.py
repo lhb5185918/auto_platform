@@ -123,8 +123,10 @@ class TestSuite(models.Model):
     name = models.CharField(max_length=255, verbose_name='套件名称')
     description = models.TextField(verbose_name='套件描述', null=True, blank=True)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='test_suites', verbose_name='所属项目')
+    environment_cover = models.ForeignKey(TestEnvironmentCover, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='test_suites', verbose_name='执行环境套')
     environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True, blank=True,
-                                    related_name='test_suites', verbose_name='执行环境')
+                                    related_name='test_suites_env', verbose_name='执行环境')
     creator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='test_suites',
                                 verbose_name='创建者')
     create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
@@ -185,3 +187,193 @@ class TestSuiteResult(models.Model):
 
     def __str__(self):
         return f"{self.suite.name} - {self.execution_time}"
+
+
+class TestExecutionLog(models.Model):
+    """测试执行日志模型，记录详细的执行过程"""
+    log_id = models.AutoField(primary_key=True, verbose_name='日志ID')
+    # 可以关联到测试用例、测试套件或单独执行
+    case = models.ForeignKey(TestCase, on_delete=models.SET_NULL, null=True, blank=True, 
+                             related_name='execution_logs', verbose_name='测试用例')
+    suite = models.ForeignKey(TestSuite, on_delete=models.SET_NULL, null=True, blank=True, 
+                              related_name='execution_logs', verbose_name='测试套件')
+    # 只保留与测试套件结果的关联
+    suite_result = models.ForeignKey(TestSuiteResult, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='execution_logs', verbose_name='套件执行结果')
+    # 执行基本信息
+    execution_time = models.DateTimeField(auto_now_add=True, verbose_name='执行时间')
+    status = models.CharField(max_length=20, verbose_name='执行状态', 
+                             choices=[('pass', '通过'), ('fail', '失败'), 
+                                     ('error', '错误'), ('skip', '跳过')])
+    duration = models.FloatField(verbose_name='执行时长(秒)', default=0)
+    executor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, 
+                                related_name='execution_logs', verbose_name='执行人')
+    
+    # 请求详情
+    request_url = models.TextField(verbose_name='请求URL', null=True, blank=True)
+    request_method = models.CharField(max_length=20, verbose_name='请求方法', null=True, blank=True)
+    request_headers = models.TextField(verbose_name='请求头', null=True, blank=True)
+    request_body = models.TextField(verbose_name='请求体', null=True, blank=True)
+    
+    # 响应详情
+    response_status_code = models.IntegerField(verbose_name='响应状态码', null=True, blank=True)
+    response_headers = models.TextField(verbose_name='响应头', null=True, blank=True)
+    response_body = models.TextField(verbose_name='响应体', null=True, blank=True)
+    
+    # 日志详情
+    log_detail = models.TextField(verbose_name='详细日志', null=True, blank=True)
+    error_message = models.TextField(verbose_name='错误信息', null=True, blank=True)
+    
+    # 提取的变量
+    extracted_variables = models.TextField(verbose_name='提取的变量', null=True, blank=True)
+    
+    # 断言结果
+    assertion_results = models.TextField(verbose_name='断言结果', null=True, blank=True)
+    
+    # 环境信息
+    environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='execution_logs', verbose_name='执行环境')
+    environment_cover = models.ForeignKey(TestEnvironmentCover, on_delete=models.SET_NULL, null=True, blank=True,
+                                         related_name='execution_logs', verbose_name='环境套')
+    
+    class Meta:
+        verbose_name = '执行日志'
+        verbose_name_plural = '执行日志'
+        ordering = ['-execution_time']  # 按执行时间倒序排列
+    
+    def __str__(self):
+        case_name = self.case.case_name if self.case else (self.suite.name if self.suite else '未知用例')
+        return f"{case_name} - {self.execution_time} - {self.status}"
+
+
+class TestPlan(models.Model):
+    """测试计划模型"""
+    plan_id = models.AutoField(primary_key=True, verbose_name='计划ID')
+    name = models.CharField(max_length=255, verbose_name='计划名称')
+    description = models.TextField(verbose_name='计划描述', null=True, blank=True)
+    
+    # 计划调度设置
+    SCHEDULE_TYPES = [
+        ('once', '一次性'),
+        ('daily', '每天'),
+        ('weekly', '每周'),
+        ('cron', '定时任务')
+    ]
+    schedule_type = models.CharField(max_length=20, choices=SCHEDULE_TYPES, default='once', verbose_name='调度类型')
+    execute_time = models.DateTimeField(null=True, blank=True, verbose_name='执行时间')
+    cron_expression = models.CharField(max_length=100, null=True, blank=True, verbose_name='Cron表达式')
+    
+    # 重试设置
+    retry_times = models.IntegerField(default=0, verbose_name='重试次数')
+    
+    # 通知设置
+    NOTIFY_TYPES = [
+        ('email', '邮件'),
+        ('dingtalk', '钉钉'),
+        ('wechat', '微信'),
+        ('sms', '短信')
+    ]
+    notify_types = models.CharField(max_length=255, null=True, blank=True, verbose_name='通知类型')
+    
+    # 执行状态
+    status = models.CharField(max_length=20, default='pending', verbose_name='执行状态',
+                             choices=[
+                                 ('pending', '待执行'),
+                                 ('running', '执行中'),
+                                 ('completed', '已完成'),
+                                 ('failed', '失败'),
+                                 ('cancelled', '已取消')
+                             ])
+    
+    # 关联关系
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='test_plans', verbose_name='所属项目')
+    creator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='test_plans', verbose_name='创建者')
+    
+    # 时间戳
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    last_executed_at = models.DateTimeField(null=True, blank=True, verbose_name='最后执行时间')
+    
+    class Meta:
+        verbose_name = '测试计划'
+        verbose_name_plural = '测试计划'
+        ordering = ['-create_time']
+        
+    def __str__(self):
+        return self.name
+
+
+class TestPlanSuite(models.Model):
+    """测试计划-测试套件关联模型"""
+    id = models.AutoField(primary_key=True)
+    plan = models.ForeignKey(TestPlan, on_delete=models.CASCADE, related_name='plan_suites', verbose_name='测试计划')
+    suite = models.ForeignKey(TestSuite, on_delete=models.CASCADE, related_name='plan_suites', verbose_name='测试套件')
+    order = models.IntegerField(default=0, verbose_name='执行顺序')
+    
+    # 关联环境
+    environment = models.ForeignKey(TestEnvironment, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='plan_suites', verbose_name='执行环境')
+    environment_cover = models.ForeignKey(TestEnvironmentCover, on_delete=models.SET_NULL, null=True, blank=True,
+                                         related_name='plan_suites', verbose_name='环境套')
+    
+    # 时间戳
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    
+    class Meta:
+        ordering = ['order']
+        unique_together = ['plan', 'suite']
+        
+    def __str__(self):
+        return f"{self.plan.name} - {self.suite.name}"
+
+
+class TestPlanResult(models.Model):
+    """测试计划执行结果模型"""
+    result_id = models.AutoField(primary_key=True, verbose_name='结果ID')
+    plan = models.ForeignKey(TestPlan, on_delete=models.CASCADE, related_name='execution_results', verbose_name='测试计划')
+    execution_time = models.DateTimeField(verbose_name='执行时间')
+    status = models.CharField(max_length=20, verbose_name='执行状态',
+                             choices=[
+                                 ('pass', '通过'),
+                                 ('fail', '失败'),
+                                 ('error', '错误'),
+                                 ('partial', '部分通过'),
+                                 ('cancelled', '已取消')
+                             ])
+    
+    # 执行结果统计
+    duration = models.FloatField(verbose_name='执行时长', help_text='单位：秒', default=0)
+    total_suites = models.IntegerField(verbose_name='套件总数', default=0)
+    passed_suites = models.IntegerField(verbose_name='通过套件数', default=0)
+    failed_suites = models.IntegerField(verbose_name='失败套件数', default=0)
+    error_suites = models.IntegerField(verbose_name='错误套件数', default=0)
+    
+    # 测试用例统计
+    total_cases = models.IntegerField(verbose_name='用例总数', default=0)
+    passed_cases = models.IntegerField(verbose_name='通过用例数', default=0)
+    failed_cases = models.IntegerField(verbose_name='失败用例数', default=0)
+    error_cases = models.IntegerField(verbose_name='错误用例数', default=0)
+    skipped_cases = models.IntegerField(verbose_name='跳过用例数', default=0)
+    
+    # 通过率
+    pass_rate = models.FloatField(verbose_name='通过率', default=0)
+    
+    # 结果数据
+    result_data = models.TextField(verbose_name='结果数据', help_text='JSON格式的详细结果数据')
+    error_message = models.TextField(verbose_name='错误信息', null=True, blank=True)
+    
+    # 关联用户
+    executor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='plan_results', verbose_name='执行者')
+    
+    # 时间戳
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    
+    class Meta:
+        verbose_name = '测试计划结果'
+        verbose_name_plural = '测试计划结果'
+        ordering = ['-execution_time']
+        
+    def __str__(self):
+        return f"{self.plan.name} - {self.execution_time}"

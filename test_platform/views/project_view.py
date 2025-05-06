@@ -1,6 +1,6 @@
 from django.http import JsonResponse
 from django.core.paginator import Paginator
-from test_platform.models import Project, TestCase
+from test_platform.models import Project, TestCase, TestSuiteResult
 from django.contrib.auth.models import User
 from datetime import datetime
 from django.views.decorators.csrf import csrf_exempt
@@ -10,7 +10,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.views import APIView
 from rest_framework.response import Response
 import json
-from django.db.models import Q
+from django.db.models import Q, Count, Case, When, F, FloatField, ExpressionWrapper, Sum
 
 
 @csrf_exempt  # 禁用CSRF保护，允许跨域请求
@@ -26,172 +26,142 @@ def get_project_list(request):
 
         # 查询所有项目并按创建时间排序
         projects = Project.objects.all().order_by('created_at')
-
-        # 使用Django分页器进行分页处理
-        paginator = Paginator(projects, page_size)
-        page_obj = paginator.get_page(page)
-
-        # 初始化响应数据结构
-        data = {
-            "total": paginator.count,  # 总记录数
-            "projects": [],  # 项目列表
-            "page": page,  # 当前页码
-            "page_size": page_size,  # 每页大小
-            "total_pages": paginator.num_pages  # 总页数
-        }
-
-        # 遍历当前页的项目，构建详细信息
-        for project in page_obj:
-            # 获取项目成员数量
-            members_count = project.user.projects.count()
-
-            # TODO: 以下是示例数据，需要根据实际模型关联获取
-            test_cases_count = int(TestCase.objects.filter(project_id=project.project_id).count())  # 测试用例数量
-            execution_count = 50  # 执行次数
-            success_rate = 95.5  # 成功率
-            last_execution_time = datetime.now().isoformat()  # 最后执行时间
-
-            # 构建创建者信息
-            creator = {
-                "id": project.user.id,
-                "username": project.user.username,
-                "avatar": "avatar_url"  # TODO: 需要关联用户头像
+        
+        # 查询结果列表
+        project_list = []
+        
+        # 遍历构建项目信息
+        for project in projects:
+            # 获取测试用例数量
+            test_cases_count = TestCase.objects.filter(project=project).count()
+            
+            # 获取测试套件执行次数
+            suite_results = TestSuiteResult.objects.filter(suite__project=project)
+            execution_count = suite_results.count()
+            
+            # 计算成功率
+            if execution_count > 0:
+                # 计算通过的结果数
+                pass_count = suite_results.filter(status='pass').count()
+                # 计算成功率百分比
+                success_rate = round((pass_count / execution_count) * 100, 1)
+            else:
+                success_rate = 0.0
+            
+            # 获取项目创建者信息
+            creator_info = {
+                "id": project.user.id if project.user else None,
+                "username": project.user.username if project.user else "未知",
             }
-
-            # 构建单个项目的详细信息
-            project_info = {
+            
+            # 构建项目信息
+            project_data = {
                 "id": project.project_id,
                 "name": project.name,
                 "description": project.description,
-                "status": "active",  # TODO: 需要关联项目状态
-                "create_time": project.created_at.isoformat(),
-                "update_time": project.updated_at.isoformat(),
-                "creator": creator,
-                "members_count": members_count,
                 "test_cases_count": test_cases_count,
                 "execution_count": execution_count,
                 "success_rate": success_rate,
-                "last_execution_time": last_execution_time
+                "create_time": project.created_at.strftime('%Y-%m-%d %H:%M:%S') if project.created_at else None,
+                "update_time": project.updated_at.strftime('%Y-%m-%d %H:%M:%S') if project.updated_at else None,
+                "creator": creator_info,
+                'status': project.is_active
             }
-
-            data["projects"].append(project_info)
-
-        # 构建最终响应数据
+            
+            project_list.append(project_data)
+        
+        # 使用分页器
+        paginator = Paginator(project_list, page_size)
+        page_obj = paginator.get_page(page)
+        
+        # 构建响应数据
         response_data = {
             "code": 200,
-            "message": "获取项目列表成功",
-            "total": paginator.count,
-            "data": data
-        }
-
-        return JsonResponse(response_data, json_dumps_params={'ensure_ascii': False})
-    else:
-        # POST请求处理逻辑，与GET类似，但从请求体获取参数
-        request_body = json.loads(request.body)
-        if 'page' in request_body:
-            page = int(request_body['page'])
-            page_size = int(request_body['page_size'])
-            # 查询和分页逻辑与GET请求相同
-            projects = Project.objects.all().order_by('created_at')
-            paginator = Paginator(projects, page_size)
-            page_obj = paginator.get_page(page)
-
-            # 构建响应数据结构
-            data = {
-                "total": paginator.count,
-                "projects": [],
-                "page": page,
-                "page_size": page_size,
-                "total_pages": paginator.num_pages
+            "message": "success",
+            "data": {
+                "total": len(project_list),
+                "projects": list(page_obj)
             }
-
-            # 遍历构建项目信息，逻辑与GET请求相同
-            for project in page_obj:
-                members_count = project.user.projects.count()
-
-                # TODO: 示例数据，需要实际关联
-                test_cases_count = int(TestCase.objects.filter(project_id=project.project_id).count())  # 测试用例数量
-                execution_count = 50
-                success_rate = 95.5
-                last_execution_time = datetime.now().isoformat()
-
-                creator = {
-                    "id": project.user.id,
-                    "username": project.user.username,
-                    "avatar": "avatar_url"
+        }
+        
+        return JsonResponse(response_data)
+    else:
+        # POST请求处理逻辑，主要用于搜索
+        try:
+            request_body = json.loads(request.body)
+            name = request_body.get('name', '')
+            project_status = request_body.get('status', None)
+            start_time = request_body.get('start_date', '')
+            end_time = request_body.get('end_date', '')
+            query = Q()
+            if name and name.strip():
+                query &= Q(name=name)
+            if project_status is not None and project_status != '':
+                query &= Q(is_active=project_status)
+            if start_time and end_time:
+                start_datetime = datetime.strptime(start_time, '%Y-%m-%d')
+                end_datetime = datetime.strptime(end_time, '%Y-%m-%d')
+                query &= Q(created_at__range=(start_datetime, end_datetime))
+            
+            # 查询符合条件的项目
+            projects = Project.objects.filter(query).order_by('created_at')
+            
+            # 查询结果列表
+            project_list = []
+            
+            # 遍历构建项目信息
+            for project in projects:
+                # 获取测试用例数量
+                test_cases_count = TestCase.objects.filter(project=project).count()
+                
+                # 获取测试套件执行次数
+                suite_results = TestSuiteResult.objects.filter(suite__project=project)
+                execution_count = suite_results.count()
+                
+                # 计算成功率
+                if execution_count > 0:
+                    # 计算通过的结果数
+                    pass_count = suite_results.filter(status='pass').count()
+                    # 计算成功率百分比
+                    success_rate = round((pass_count / execution_count) * 100, 1)
+                else:
+                    success_rate = 0.0
+                
+                # 获取项目创建者信息
+                creator_info = {
+                    "id": project.user.id if project.user else None,
+                    "username": project.user.username if project.user else "未知",
                 }
-
-                project_info = {
+                
+                # 构建项目信息
+                project_data = {
                     "id": project.project_id,
                     "name": project.name,
                     "description": project.description,
-                    "status": project.is_active,
-                    "create_time": project.created_at.isoformat(),
-                    "update_time": project.updated_at.isoformat(),
-                    "creator": creator,
-                    "members_count": members_count,
                     "test_cases_count": test_cases_count,
                     "execution_count": execution_count,
                     "success_rate": success_rate,
-                    "last_execution_time": last_execution_time
+                    "create_time": project.created_at.strftime('%Y-%m-%d %H:%M:%S') if project.created_at else None,
+                    "update_time": project.updated_at.strftime('%Y-%m-%d %H:%M:%S') if project.updated_at else None,
+                    "creator": creator_info,
+                    'status': project.is_active
                 }
+                
+                project_list.append(project_data)
 
-                data["projects"].append(project_info)
-
-            response_data = {
-                "code": 200,
-                "message": "获取项目列表成功",
-                "total": paginator.count,
-                "data": data
-            }
-            return JsonResponse(response_data, json_dumps_params={'ensure_ascii': False})
-        else:
-            try:
-                request_body = json.loads(request.body)
-                name = request_body.get('name', '')
-                project_status = request_body.get('status', None)
-                start_time = request_body.get('start_date', '')
-                end_time = request_body.get('end_date', '')
-                query = Q()
-                if name and name.strip():
-                    query &= Q(name=name)
-                if project_status is not None and project_status != '':
-                    query &= Q(is_active=project_status)
-                if start_time and end_time:
-                    start_datetime = datetime.strptime(start_time, '%Y-%m-%d')
-                    end_datetime = datetime.strptime(end_time, '%Y-%m-%d')
-                    query &= Q(created_at__range=(start_datetime, end_datetime))
-                projects = Project.objects.filter(query).order_by('created_at')
-                project_list = []
-                for project in projects:
-                    project_list.append({
-                        'id': project.project_id,
-                        'name': project.name,
-                        'description': project.description,
-                        'status': project.is_active,
-                        'create_time': project.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                        'creator': {
-                            'id': project.user.id,
-                            'username': project.user.username
-                        } if project.user else None,
-                        'test_cases_count': project.test_cases.count() if hasattr(project, 'test_cases') else 0,
-                        'last_execution_time': project.created_at.strftime(
-                            '%Y-%m-%d %H:%M:%S') if project.created_at else None
-                    })
-
-                return JsonResponse({
-                    'code': 200,
-                    'message': 'success',
-                    'data': {
-                        'total': len(project_list),
-                        'projects': project_list
-                    }
-                })
-            except Exception as e:
-                return JsonResponse({
-                    'code': 200,
-                    'message': f'查询失败：{str(e)}'
-                })
+            return JsonResponse({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'total': len(project_list),
+                    'projects': project_list
+                }
+            })
+        except Exception as e:
+            return JsonResponse({
+                'code': 200,
+                'message': f'查询失败：{str(e)}'
+            })
 
 
 class ProjectView(APIView):

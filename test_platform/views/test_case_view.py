@@ -1,6 +1,6 @@
 from django.http import JsonResponse
 from django.core.paginator import Paginator
-from test_platform.models import Project, TestCase, TestEnvironment, TestEnvironmentCover, TestSuite, TestSuiteCase, TestSuiteResult
+from test_platform.models import Project, TestCase, TestEnvironment, TestEnvironmentCover, TestSuite, TestSuiteCase, TestSuiteResult, TestExecutionLog, TestResult
 from django.contrib.auth.models import User
 from datetime import datetime
 from django.views.decorators.csrf import csrf_exempt
@@ -1082,12 +1082,69 @@ class TestEnvironmentCoverView(APIView):
                 'message': f'获取环境套列表失败：{str(e)}',
                 'data': None
             })
+            
+    def delete(self, request, env_cover_id):
+        """删除测试环境套"""
+        try:
+            # 查找环境套
+            try:
+                environment_cover = TestEnvironmentCover.objects.get(environment_cover_id=env_cover_id)
+            except TestEnvironmentCover.DoesNotExist:
+                return JsonResponse({
+                    'code': 404,
+                    'message': '环境套不存在',
+                    'data': None
+                }, status=404)
+            
+            # 先检查是否有环境变量关联到这个环境套
+            related_environments = TestEnvironment.objects.filter(environment_cover=environment_cover)
+            related_count = related_environments.count()
+            
+            # 如果有关联的环境变量，提供警告并级联删除
+            if related_count > 0:
+                # 删除所有关联的环境变量
+                related_environments.delete()
+            
+            # 删除环境套
+            environment_cover.delete()
+            
+            return JsonResponse({
+                'code': 200,
+                'message': f'环境套删除成功，同时删除了{related_count}个关联环境变量',
+                'data': None
+            })
+            
+        except Exception as e:
+            return JsonResponse({
+                'code': 500,
+                'message': f'删除环境套失败：{str(e)}',
+                'data': None
+            }, status=500)
 
 
 class TestSuiteView(APIView):
     """测试套件视图"""
     permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication]
+    
+    def execute_suite(self, request, suite_id, environment_id=None):
+        """
+        执行测试套件的方法，供其他模块调用
+        这是对post方法的封装，使其可以被直接调用
+        """
+        # 创建一个包含suite_id的请求数据
+        if hasattr(request, 'data'):
+            request.data['suite_id'] = suite_id
+        else:
+            # 如果request是自定义对象，可能没有data属性
+            request.data = {'suite_id': suite_id}
+            
+        # 如果提供了环境ID，添加到请求数据中
+        if environment_id:
+            request.data['environment_id'] = environment_id
+            
+        # 调用post方法执行测试套件
+        return self.post(request, suite_id=suite_id)
     
     def post(self, request, suite_id=None):
         """创建测试套件或执行测试套件"""
@@ -1105,11 +1162,24 @@ class TestSuiteView(APIView):
                     }, status=404)
                 
                 # 获取测试环境
-                environment = test_suite.environment
-                if not environment:
+                environment = None
+                # 优先使用环境套关联的环境
+                if test_suite.environment_cover:
+                    # 从环境套中获取第一个环境实例
+                    environment = TestEnvironment.objects.filter(environment_cover=test_suite.environment_cover).first()
+                    if not environment:
+                        return JsonResponse({
+                            'code': 400,
+                            'message': f'环境套"{test_suite.environment_cover.environment_name}"下没有可用的环境配置，请先为该环境套添加环境',
+                            'data': None
+                        }, status=400)
+                # 如果没有环境套，回退到使用直接关联的环境
+                elif test_suite.environment:
+                    environment = test_suite.environment
+                else:
                     return JsonResponse({
                         'code': 400,
-                        'message': '测试套件未配置执行环境',
+                        'message': '测试套件未配置执行环境套或环境',
                         'data': None
                     }, status=400)
                 
@@ -1187,6 +1257,9 @@ class TestSuiteView(APIView):
                         class MockRequest:
                             def __init__(self, data):
                                 self.data = data
+                                # 添加自动化标记，表示这是自动化接口执行
+                                self.data['is_automation'] = True
+                                
                                 # 根据HTTP方法区别处理请求体
                                 method = data.get('method', '').upper()
                                 if method == 'GET':
@@ -1206,6 +1279,11 @@ class TestSuiteView(APIView):
                                 
                                 # 添加额外的请求属性
                                 self.user = request.user  # 传递当前用户信息
+                                
+                                # 添加META字典，包含自动化标记
+                                self.META = {
+                                    'HTTP_X_AUTOMATION': 'true'  # 标记为自动化接口执行
+                                }
                                 
                                 # 处理GET请求参数
                                 self.GET = {}
@@ -1268,19 +1346,25 @@ class TestSuiteView(APIView):
                             try:
                                 response_data = json.loads(response.content)
                                 
+                                # 处理提取的变量和上下文更新，不管是否有extractors都执行
                                 # 获取提取的变量，更新上下文
-                                if response_data.get('success') and 'extractors' in response_data.get('data', {}):
-                                    extractors_data = response_data['data']['extractors']
-                                    new_vars = extractors_data.get('extracted_variables', {})
-                                    if new_vars:
-                                        print(f"提取到变量: {new_vars}")
-                                        context.update(new_vars)
-                                    
-                                    # 更新整个上下文
-                                    new_context = extractors_data.get('context', {})
-                                    if new_context:
-                                        context = new_context
-                                        print(f"更新后的上下文: {context}")
+                                extractors_data = response_data.get('data', {}).get('extractors', {})
+                                new_vars = extractors_data.get('extracted_variables', {})
+                                if new_vars:
+                                    print(f"提取到变量: {new_vars}")
+                                    context.update(new_vars)
+                                
+                                # 更新整个上下文
+                                new_context = extractors_data.get('context', {})
+                                if new_context:
+                                    context = new_context
+                                    print(f"更新后的上下文: {context}")
+                                
+                                # 注释掉为每个测试用例创建执行日志的代码
+                                # 在execute_test_direct方法中，会创建一条总的日志
+                                # 在测试套件执行完成后，会创建一条套件执行结果记录，足够记录执行历史
+                            except Exception as parse_error:
+                                print(f"解析响应内容失败: {str(parse_error)}")
                             except json.JSONDecodeError:
                                 # 如果无法解析为JSON，则使用原始文本
                                 response_text = response.content.decode('utf-8', errors='ignore')
@@ -1432,7 +1516,7 @@ class TestSuiteView(APIView):
                 }
                 
                 # 创建测试套件执行结果记录
-                TestSuiteResult.objects.create(
+                suite_result = TestSuiteResult.objects.create(
                     suite=test_suite,
                     execution_time=suite_start_time,
                     status=suite_status,
@@ -1447,6 +1531,53 @@ class TestSuiteView(APIView):
                     environment=environment,
                     creator=request.user
                 )
+                
+                # 创建一条总的执行日志记录
+                try:
+                    # 构建请求和响应的汇总信息
+                    summary_request = {
+                        'total_cases': total_cases,
+                        'execution_info': f"测试套件 '{test_suite.name}' 共执行了 {total_cases} 个测试用例"
+                    }
+                    
+                    summary_response = {
+                        'passed': passed_cases,
+                        'failed': failed_cases,
+                        'error': error_cases,
+                        'skipped': skipped_cases,
+                        'pass_rate': f"{pass_rate}%"
+                    }
+                    
+                    # 创建执行日志
+                    log = TestExecutionLog.objects.create(
+                        suite=test_suite,
+                        suite_result=suite_result,
+                        status=suite_status,
+                        duration=total_duration_seconds,
+                        executor=None,  # 避免AnonymousUser的问题
+                        request_url=f"测试套件执行: {test_suite.name}",
+                        request_method="SUITE",
+                        request_headers=json.dumps(summary_request),
+                        request_body=json.dumps({'suite_id': suite_id}),
+                        response_status_code=200,
+                        response_headers=json.dumps(summary_response),
+                        response_body=json.dumps(execution_results),
+                        log_detail=f"测试套件 {test_suite.name} 执行完成，共 {total_cases} 个用例，通过 {passed_cases} 个，失败 {failed_cases} 个，错误 {error_cases} 个，跳过 {skipped_cases} 个",
+                        error_message="" if suite_status in ['pass', 'partial'] else f"测试套件执行失败，通过率: {pass_rate}%",
+                        environment=environment
+                    )
+                    print(f"已创建测试套件执行总日志: ID={log.log_id}")
+                except Exception as log_error:
+                    print(f"创建测试套件执行总日志失败: {str(log_error)}")
+                    import traceback
+                    traceback.print_exc()
+                
+                # 查询所有尚未关联到suite_result的执行日志并更新
+                TestExecutionLog.objects.filter(
+                    suite=test_suite,
+                    suite_result__isnull=True,
+                    execution_time__gte=suite_start_time
+                ).update(suite_result=suite_result)
                 
                 # 返回执行结果
                 return JsonResponse({
@@ -1503,14 +1634,15 @@ class TestSuiteView(APIView):
                             'data': None
                         }, status=404)
                     
-                    environment = None
+                    environment_cover = None
                     if env_id:
                         try:
-                            environment = TestEnvironment.objects.get(environment_id=env_id)
-                        except TestEnvironment.DoesNotExist:
+                            # 现在是直接查找环境套
+                            environment_cover = TestEnvironmentCover.objects.get(environment_cover_id=env_id)
+                        except TestEnvironmentCover.DoesNotExist:
                             return JsonResponse({
                                 'code': 404,
-                                'message': '环境不存在',
+                                'message': '环境套不存在',
                                 'data': None
                             }, status=404)
                     
@@ -1519,7 +1651,7 @@ class TestSuiteView(APIView):
                         name=name,
                         description=description,
                         project=project,
-                        environment=environment,
+                        environment_cover=environment_cover,  # 使用环境套而不是环境
                         creator=request.user
                     )
                     
@@ -1620,20 +1752,19 @@ class TestSuiteView(APIView):
                     'description': test_suite.description,
                     'project_id': test_suite.project.project_id,
                     'project_name': test_suite.project.name,  # 添加项目名称
-                    'env_id': test_suite.environment.environment_id if test_suite.environment else None,
-                    'environment': {
-                        'env_id': test_suite.environment.environment_id if test_suite.environment else None,
-                        'name': test_suite.environment.env_name if test_suite.environment else '',
-                        'host': test_suite.environment.host if test_suite.environment else '',
-                        'port': test_suite.environment.port if test_suite.environment else 0,
-                        'base_url': test_suite.environment.base_url if test_suite.environment else ''
-                    } if test_suite.environment else None,
+                    'env_id': test_suite.environment_cover.environment_cover_id if test_suite.environment_cover else None,
+                    'environment': {  # 保留environment字段名，但内容为environment_cover信息
+                        'env_id': test_suite.environment_cover.environment_cover_id if test_suite.environment_cover else None,
+                        'name': test_suite.environment_cover.environment_name if test_suite.environment_cover else '',
+                        'description': test_suite.environment_cover.environment_description if test_suite.environment_cover else ''
+                    } if test_suite.environment_cover else None,
                     'creator': test_suite.creator.username if test_suite.creator else None,
                     'create_time': test_suite.create_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'update_time': test_suite.update_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'last_executed_at': test_suite.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if test_suite.last_executed_at else None,
                     'last_execution_status': test_suite.last_execution_status,
-                    'cases': cases_data
+                    'cases': cases_data,
+                    'environment_cover_id': test_suite.environment_cover_id
                 }
                 
                 return JsonResponse({
@@ -1687,7 +1818,9 @@ class TestSuiteView(APIView):
                         'create_time': suite.create_time.strftime('%Y-%m-%d %H:%M:%S'),
                         'update_time': suite.update_time.strftime('%Y-%m-%d %H:%M:%S'),
                         'last_executed_at': suite.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if suite.last_executed_at else None,
-                        'last_execution_status': suite.last_execution_status
+                        'last_execution_status': suite.last_execution_status,
+                        'environment_cover_id': suite.environment_cover_id
+
                     })
                 
                 return JsonResponse({
@@ -1792,13 +1925,13 @@ class TestSuiteView(APIView):
                 if description is not None:
                     test_suite.description = description
                 
-                # 更新环境
+                # 更新环境套
                 if env_id:
                     try:
-                        environment = TestEnvironment.objects.get(environment_id=env_id)
-                        test_suite.environment = environment
-                    except TestEnvironment.DoesNotExist:
-                        pass  # 如果环境不存在，则保持原有环境
+                        environment_cover = TestEnvironmentCover.objects.get(environment_cover_id=env_id)
+                        test_suite.environment_cover = environment_cover
+                    except TestEnvironmentCover.DoesNotExist:
+                        pass  # 如果环境套不存在，则保持原有环境套
                 
                 test_suite.save()
                 
@@ -1874,3 +2007,82 @@ class TestSuiteView(APIView):
                 'message': f'删除测试套件失败: {str(e)}',
                 'data': None
             }, status=500)
+
+
+class EnvironmentSwitchView(APIView):
+    """环境套切换视图"""
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+    
+    def get(self, request):
+        try:
+            # 从会话中获取当前环境套ID
+            current_env_id = request.session.get('current_environment_cover_id')
+            
+            if current_env_id:
+                # 检查环境套是否存在
+                try:
+                    environment_cover = TestEnvironmentCover.objects.get(environment_cover_id=current_env_id)
+                    return JsonResponse({
+                        'code': 200,
+                        'message': 'success',
+                        'data': {
+                            'env_id': str(current_env_id),
+                            'env_name': environment_cover.environment_name,
+                            'description': environment_cover.environment_description
+                        }
+                    })
+                except TestEnvironmentCover.DoesNotExist:
+                    # 如果环境套不存在，清除会话中的ID
+                    if 'current_environment_cover_id' in request.session:
+                        del request.session['current_environment_cover_id']
+            
+            # 如果没有设置环境套或环境套不存在，返回空数据
+            return JsonResponse({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'env_id': None
+                }
+            })
+            
+        except Exception as e:
+            return JsonResponse({
+                'code': 500,
+                'message': f'获取当前环境套失败：{str(e)}',
+                'data': None
+            })
+    
+    def put(self, request):
+        try:
+            env_id = request.data.get('env_id')
+            
+            # 验证环境套ID是否存在
+            try:
+                environment_cover = TestEnvironmentCover.objects.get(environment_cover_id=env_id)
+            except TestEnvironmentCover.DoesNotExist:
+                return JsonResponse({
+                    'code': 404,
+                    'message': '环境套不存在',
+                    'data': None
+                })
+                
+            # 在这里可以添加会话状态或用户设置来记住当前选择的环境套
+            # 例如，可以使用Django会话存储当前环境套ID
+            request.session['current_environment_cover_id'] = env_id
+            
+            # 返回成功响应
+            return JsonResponse({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'env_id': str(env_id)
+                }
+            })
+            
+        except Exception as e:
+            return JsonResponse({
+                'code': 500,
+                'message': f'切换环境套失败：{str(e)}',
+                'data': None
+            })

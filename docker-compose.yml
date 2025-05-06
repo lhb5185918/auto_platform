@@ -33,7 +33,7 @@ services:
       - DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1 [::1]
       - DATABASE_ENGINE=django.db.backends.mysql
       - DATABASE_NAME=auto_platform
-      - DATABASE_USER=dbuser
+      - DATABASE_USER=root1
       - DATABASE_PASSWORD=dbpassword
       - DATABASE_HOST=db
       - DATABASE_PORT=3306

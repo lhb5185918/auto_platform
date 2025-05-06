@@ -93,7 +93,8 @@ class TestReportView(APIView):
                         'caseResults': case_results,
                         'projectId': test_suite.project_id,  # 添加项目ID
                         'projectName': test_suite.project.name,  # 添加项目名称
-                        'creator': result.creator.username if result.creator else '未知用户'  # 添加执行者
+                        'creator': result.creator.username if result.creator else '未知用户',  # 添加执行者
+                        'logs_link': f"/api/log?suite_result_id={result.result_id}"  # 添加日志链接
                     }
                     
                     return JsonResponse({
@@ -310,7 +311,11 @@ class TestReportView(APIView):
                         'failedCases': latest_result.failed_cases + latest_result.error_cases,  # 合并失败和错误
                         'passRate': latest_result.pass_rate,
                         'result': result_status,
-                        'caseResults': case_results
+                        'caseResults': case_results,
+                        'projectId': test_suite.project_id,  # 添加项目ID
+                        'projectName': test_suite.project.name,  # 添加项目名称
+                        'creator': latest_result.creator.username if latest_result.creator else '未知用户',  # 添加执行者
+                        'logs_link': f"/api/log?suite_result_id={latest_result.result_id}"  # 添加日志链接
                     }
                     
                     return JsonResponse({
@@ -334,6 +339,9 @@ class TestReportView(APIView):
                         'passRate': latest_result.pass_rate,
                         'result': status_map.get(latest_result.status, latest_result.status),
                         'caseResults': [],
+                        'projectId': test_suite.project_id,
+                        'projectName': test_suite.project.name,
+                        'creator': latest_result.creator.username if latest_result.creator else '未知用户',
                         'error': '结果数据解析失败'
                     }
                     

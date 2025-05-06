@@ -2,9 +2,12 @@ from django.urls import path
 from test_platform.views.login_views import LoginView, RegisterView, UserInfoView
 from test_platform.views.project_view import ProjectView, get_project_list, ProjectEditView, ProjectDeleteView
 from test_platform.views.test_case_view import TestCaseView, TestEnvironmentView, TestCaseImportView, \
-    TestEnvironmentCoverView, TestSuiteView
+    TestEnvironmentCoverView, TestSuiteView, EnvironmentSwitchView
 from test_platform.views import execute
 from test_platform.views.report_view import TestReportView
+from test_platform.views.statistics_view import TestTrendView
+from test_platform.views.log_view import ExecutionLogView
+from test_platform.views.test_plan_view import TestPlanView
 
 urlpatterns = [
     # 登录相关路由
@@ -30,6 +33,10 @@ urlpatterns = [
     path('api/testcase/import/', TestCaseImportView.as_view(), name='testcase_import'),
     path('api/env-suite/create', TestEnvironmentCoverView.as_view(), name='environment_cover_create'),
     path('api/env-suite/list/<int:project_id>', TestEnvironmentCoverView.as_view(), name='environment_cover_list'),
+    path('api/env-suite/delete/<int:env_cover_id>', TestEnvironmentCoverView.as_view(), name='environment_cover_delete'),
+    
+    # 环境套切换路由
+    path('api/environment/current/', EnvironmentSwitchView.as_view(), name='environment_switch'),
 
     path('api/execute_test/', execute.execute_test, name='execute_test'),
 
@@ -56,6 +63,22 @@ urlpatterns = [
     path('api/report/detail/<int:result_id>', TestReportView.as_view(), name='report_detail'),
     path('api/report/delete/<int:result_id>', TestReportView.as_view(), name='report_delete'),
     path('api/report/response/<int:result_id>', execute.get_suite_result_response, name='suite_result_response'),
+    
+    # 统计相关路由
+    path('api/statistics/trend', TestTrendView.as_view(), name='statistics_trend'),
+    
+    # 执行日志相关路由
+    path('api/log', ExecutionLogView.as_view(), name='execution_log_list'),
+    path('api/log/<int:result_id>', ExecutionLogView.as_view(), name='execution_log_detail'),
+    
+    # 测试计划相关路由
+    path('api/test-plan/', TestPlanView.as_view(), name='test_plan_create'),
+    path('api/test-plan/list/<int:project_id>', TestPlanView.as_view(), name='test_plan_list'),
+    path('api/test-plan/<int:plan_id>', TestPlanView.as_view(), name='test_plan_detail'),
+    path('api/test-plan/update/<int:plan_id>', TestPlanView.as_view(), name='test_plan_update'),
+    path('api/test-plan/delete/<int:plan_id>', TestPlanView.as_view(), name='test_plan_delete'),
+    path('api/test-plan/execute/<int:plan_id>', lambda request, plan_id: TestPlanView().execute_plan(request, plan_id), name='test_plan_execute'),
+    path('api/test-plan/<int:plan_id>/executions', lambda request, plan_id: TestPlanView().get_plan_executions(request, plan_id), name='test_plan_executions'),
 ]
 
 

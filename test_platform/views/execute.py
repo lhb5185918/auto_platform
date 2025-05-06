@@ -3,10 +3,11 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 import json
 import requests
-from test_platform.models import TestCase, TestResult, TestSuite, TestSuiteCase, TestSuiteResult
+from test_platform.models import TestCase, TestResult, TestSuite, TestSuiteCase, TestSuiteResult, TestExecutionLog
 from django.utils import timezone
 from django.db import connection
 import pytz
+import time
 
 
 @csrf_exempt
@@ -205,7 +206,8 @@ def get_suite_detail(request, suite_id):
                         'params': params,
                         'expected': case.case_expect_result,
                         'case_assert_contents': assert_contents,
-                        'extractors': extractors
+                        'extractors': extractors,
+                        'environment_cover_id': case.environment_cover_id
                     })
                 except TestCase.DoesNotExist:
                     # 如果原始用例不存在，使用最小数据集
@@ -253,7 +255,9 @@ def get_suite_detail(request, suite_id):
                 'creator': test_suite.creator.username if test_suite.creator else None,
                 'last_executed_at': test_suite.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if test_suite.last_executed_at else None,
                 'last_execution_status': test_suite.last_execution_status,
-                'cases': case_list
+                'cases': case_list,
+                'environment_cover_id': test_suite.environment_cover_id
+
             }
         }
         
@@ -374,11 +378,51 @@ def update_suite_case(request, case_id):
         }, status=500, charset='utf-8', json_dumps_params={'ensure_ascii': False})
 
 
-def set_timezone():
-    """设置数据库会话时区为北京时间"""
-    with connection.cursor() as cursor:
-        cursor.execute("SET time_zone = '+08:00'")
+def try_json_dumps(data, default_message='无法序列化数据'):
+    """
+    安全的JSON序列化函数，处理可能的编码错误
+    """
+    try:
+        return json.dumps(data, ensure_ascii=False)
+    except Exception as e:
+        # 处理所有可能的编码错误
+        print(f"JSON序列化错误: {str(e)}")
+        
+        # 尝试将包含问题字符的值转换为字符串表示
+        if isinstance(data, dict):
+            safe_data = {}
+            for k, v in data.items():
+                try:
+                    # 测试这个键值对是否可以序列化
+                    json.dumps({k: v}, ensure_ascii=False)
+                    safe_data[k] = v
+                except:
+                    # 如果不能序列化，使用字符串表示
+                    safe_data[k] = f"[无法序列化的数据: {str(v)[:50]}...]"
+            return json.dumps(safe_data, ensure_ascii=False)
+        elif isinstance(data, list):
+            safe_data = []
+            for i, item in enumerate(data):
+                try:
+                    # 测试这个项是否可以序列化
+                    json.dumps(item, ensure_ascii=False)
+                    safe_data.append(item)
+                except:
+                    # 如果不能序列化，使用字符串表示
+                    safe_data.append(f"[无法序列化的数据: {str(item)[:50]}...]")
+            return json.dumps(safe_data, ensure_ascii=False)
+        else:
+            # 如果不是结构化数据，直接返回错误消息
+            return json.dumps({"error": f"{default_message}: {str(e)}"}, ensure_ascii=False)
 
+def set_timezone():
+    """设置数据库会话时区为UTC+8"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SET time_zone = '+08:00'")
+    except:
+        print("设置时区失败，使用默认时区")
+        
 def replace_variables(data, context):
     """
     递归替换数据中的${变量名}为上下文中的实际值
@@ -421,12 +465,26 @@ def handle_variable_extraction(response_data, extractors):
         extractors: 提取器配置列表
         
     返回:
-        提取的变量字典 {变量名: 变量值}
+        提取的变量字典 {变量名: 变量值} 和错误信息
     """
     extracted_vars = {}
+    error_message = None
     
-    if not extractors or not isinstance(extractors, list):
-        return extracted_vars
+    # 如果extractors不是合法的格式，直接返回空结果
+    if not extractors:
+        return extracted_vars, None
+    
+    # 尝试解析extractors为JSON
+    if isinstance(extractors, str):
+        try:
+            extractors = json.loads(extractors)
+        except json.JSONDecodeError:
+            error_message = "提取器格式错误：不是有效的JSON格式"
+            return extracted_vars, error_message
+    
+    if not isinstance(extractors, list):
+        error_message = "提取器格式错误：不是有效的列表格式"
+        return extracted_vars, error_message
         
     # 确定响应体
     if isinstance(response_data, dict) and 'body' in response_data:
@@ -435,6 +493,11 @@ def handle_variable_extraction(response_data, extractors):
     else:
         # 如果直接传入的是响应体
         response_body = response_data
+    
+    # 如果响应体不是一个可提取的格式，直接返回错误
+    if not (isinstance(response_body, dict) or isinstance(response_body, list) or isinstance(response_body, str)):
+        error_message = "响应体格式不支持变量提取"
+        return extracted_vars, error_message
         
     for extractor in extractors:
         if not isinstance(extractor, dict):
@@ -470,12 +533,15 @@ def handle_variable_extraction(response_data, extractors):
                         extracted_vars[name] = default_value
                         print(f"响应体不是JSON格式，使用默认值 {name} = {default_value}")
                 except Exception as e:
-                    print(f"提取变量失败: {str(e)}")
+                    error_msg = f"提取器'{name}'执行失败: {str(e)}"
+                    print(error_msg)
                     extracted_vars[name] = default_value
+                    if not error_message:
+                        error_message = error_msg
             
             # 可以添加其他类型的提取器支持，如正则表达式等
     
-    return extracted_vars
+    return extracted_vars, error_message
 
 def get_suite_case_data(suite_case):
     """
@@ -552,7 +618,7 @@ def get_suite_case_data(suite_case):
     return case_data
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@require_http_methods(["POST"]) #测试用例执行方法
 def execute_test(request, case_id):
     """
     执行测试用例的接口
@@ -868,28 +934,81 @@ def execute_test(request, case_id):
                 }
             }
 
+            # 创建测试结果记录
             test_result = TestResult.objects.create(
                 case=test_case,
                 execution_time=start_time,
                 status=status,
                 duration=duration,
-                result_data=json.dumps(result_data, ensure_ascii=False),
+                result_data=try_json_dumps(result_data),
                 error_message=None if is_success else (
                     assertion_error if has_assertions and not assertions_passed 
                     else f'HTTP状态码: {response.status_code}'
                 )
             )
+            
+            # 获取test_result_id用于后续使用
+            test_result_id = test_result.test_result_id
+
+            # 创建执行日志
+            try:
+                # 判断请求来源，区分单接口执行和自动化接口执行
+                is_automation = False
+                
+                # 检测自动化标记 - 多种检测方式确保兼容性
+                # 1. 从请求数据中检测
+                if hasattr(request, 'data') and isinstance(request.data, dict):
+                    is_automation = request.data.get('is_automation', False)
+                
+                # 2. 从请求头中检测
+                if not is_automation and hasattr(request, 'META'):
+                    is_automation = request.META.get('HTTP_X_AUTOMATION') == 'true'
+                
+                # 3. 从URL参数中检测
+                if not is_automation and hasattr(request, 'GET'):
+                    is_automation = request.GET.get('is_automation') == 'true'
+                
+                # 打印检测结果
+                print(f"自动化检测结果: is_automation={is_automation}")
+                
+                # 只有在单接口执行时才创建日志（自动化接口执行时不创建单独的日志）
+                if not is_automation:
+                    # 创建日志记录
+                    log = TestExecutionLog.objects.create(
+                        case=test_case,
+                        status=status.lower(),  # 确保状态格式匹配
+                        duration=duration,
+                        executor=None,  # 默认设为None
+                        request_url=url,
+                        request_method=method,
+                        request_headers=try_json_dumps(headers),
+                        request_body=try_json_dumps(body),
+                        response_status_code=response.status_code,
+                        response_headers=try_json_dumps(dict(response.headers)),
+                        response_body=try_json_dumps(response_body),
+                        log_detail=f"执行测试用例: {test_case.case_name}",
+                        error_message=None if is_success else (
+                            assertion_error if has_assertions and not assertions_passed 
+                            else f'HTTP状态码: {response.status_code}'
+                        ),
+                        extracted_variables=try_json_dumps(handle_variable_extraction(response_body, test_case.case_extractors)[0]),
+                        assertion_results=try_json_dumps({
+                            'has_assertions': has_assertions,
+                            'all_passed': assertions_passed,
+                            'results': assertion_results
+                        })
+                    )
+                    print(f"已创建执行日志: ID={log.log_id}，关联测试结果ID={test_result_id}")
+                else:
+                    print(f"自动化接口执行，跳过创建单独的执行日志")
+            except Exception as log_error:
+                print(f"处理日志记录时出错: {str(log_error)}")
+                import traceback
+                traceback.print_exc()
 
             # 更新测试用例的执行时间和状态
             try:
-                # 保存断言结果到测试用例
-                assertion_results_json = json.dumps({
-                    'has_assertions': has_assertions,
-                    'all_passed': assertions_passed,
-                    'results': assertion_results,
-                    'error': assertion_error
-                }, ensure_ascii=False)
-                
+                print(f"当前时间: {timezone.localtime(timezone.now())}")
                 # 使用 raw SQL 来更新，避免 Django ORM 的时区转换
                 with connection.cursor() as cursor:
                     cursor.execute("""
@@ -899,9 +1018,15 @@ def execute_test(request, case_id):
                             last_assertion_results = %s,
                             update_time = %s
                         WHERE test_case_id = %s
-                    """, [start_time, status.lower(), assertion_results_json, timezone.localtime(timezone.now()), test_case.test_case_id])
+                    """, [timezone.localtime(timezone.now()), status.lower(), try_json_dumps({
+                        'has_assertions': has_assertions,
+                        'all_passed': assertions_passed,
+                        'results': assertion_results,
+                        'error': assertion_error
+                    }), timezone.localtime(timezone.now()), test_case.test_case_id])
                 
-                print(f"已更新测试用例状态: {test_case.test_case_id}, 状态: {status.lower()}, 时间: {start_time}")
+                updated_case = TestCase.objects.get(test_case_id=case_id)
+                print(f"更新后状态: {updated_case.last_executed_at}, {updated_case.last_execution_result}")
             except Exception as e:
                 print(f"更新测试用例状态失败: {str(e)}")
 
@@ -909,10 +1034,10 @@ def execute_test(request, case_id):
                 'success': True,
                 'message': '测试用例执行成功',
                 'data': {
-                    'result_id': test_result.test_result_id,
+                    'result_id': test_result_id,
                     'status': status,
                     'duration': duration,
-                    'execution_time': test_result.execution_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'execution_time': start_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'request': {
                         'url': url,
                         'method': method,
@@ -941,7 +1066,7 @@ def execute_test(request, case_id):
                 case=test_case,
                 execution_time=current_time,
                 status='ERROR',
-                result_data=json.dumps({
+                result_data=try_json_dumps({
                     'error': str(e),
                     'request': {
                         'url': url,
@@ -949,9 +1074,12 @@ def execute_test(request, case_id):
                         'headers': headers,
                         'body': body
                     }
-                }, ensure_ascii=False),
+                }),
                 error_message=str(e)
             )
+            
+            # 获取test_result_id用于后续使用
+            test_result_id = test_result.test_result_id
 
             # 更新测试用例的执行时间和状态为错误
             try:
@@ -965,12 +1093,12 @@ def execute_test(request, case_id):
                         WHERE test_case_id = %s
                     """, [
                         current_time, 
-                        json.dumps({
+                        try_json_dumps({
                             'has_assertions': False, 
                             'all_passed': False,
                             'results': [],
                             'error': str(e)
-                        }, ensure_ascii=False),
+                        }),
                         current_time, 
                         test_case.test_case_id
                     ])
@@ -983,7 +1111,7 @@ def execute_test(request, case_id):
                 'success': False,
                 'message': f'请求执行失败: {str(e)}',
                 'data': {
-                    'result_id': test_result.test_result_id,
+                    'result_id': test_result_id,
                     'status': 'ERROR',
                     'error': str(e),
                     'request': {
@@ -1008,6 +1136,7 @@ def execute_test(request, case_id):
 
 @csrf_exempt
 # Remove the HTTP method restriction to support all request types
+# 自动化测试执行方法
 def execute_test_direct(request):
     try:
         # 设置会话时区
@@ -1158,34 +1287,90 @@ def execute_test_direct(request):
         start_time = timezone.localtime(timezone.now())  # 使用本地时间(北京时间)
         
         # 发送请求
-        response = requests.request(method, **request_kwargs)
-        
-        # 计算执行时间
-        end_time = timezone.localtime(timezone.now())  # 使用本地时间(北京时间)
-        duration = (end_time - start_time).total_seconds()
-        
-        # 首先根据HTTP状态码判断响应状态
-        is_http_success = 200 <= response.status_code < 300
-        
-        # 尝试解析响应为JSON
         try:
-            response_data = response.json()
-            response_body = response_data
-        except json.JSONDecodeError:
-            response_data = response.text
-            response_body = {'content': response.text}
-        
+            response = requests.request(method, **request_kwargs)
+            
+            # 计算执行时间
+            end_time = timezone.localtime(timezone.now())  # 使用本地时间(北京时间)
+            duration = (end_time - start_time).total_seconds()
+            
+            # 首先根据HTTP状态码判断响应状态
+            is_http_success = 200 <= response.status_code < 300
+            
+            # 尝试解析响应为JSON
+            try:
+                response_data = response.json()
+                response_body = response_data
+            except json.JSONDecodeError:
+                response_data = response.text
+                response_body = {'content': response.text}
+                
+        except requests.exceptions.RequestException as e:
+            # 请求异常，如连接错误、超时等
+            end_time = timezone.localtime(timezone.now())
+            duration = (end_time - start_time).total_seconds()
+            error_msg = f"请求发送失败: {str(e)}"
+            if "codec can't encode" in str(e):
+                error_msg = "请求中包含无法编码的特殊字符，请检查请求参数"
+            elif "Failed to establish a new connection" in str(e):
+                error_msg = "无法连接到服务器，请检查网络或服务是否可用"
+            elif "Read timed out" in str(e):
+                error_msg = "请求超时，服务器响应时间过长"
+            
+            return JsonResponse({
+                'success': False,
+                'message': error_msg,
+                'data': {
+                    'error': error_msg,
+                    'technical_details': str(e),
+                    'url': api_path,
+                    'method': method
+                }
+            })
+        except UnicodeEncodeError as e:
+            # 编码错误
+            end_time = timezone.localtime(timezone.now())
+            duration = (end_time - start_time).total_seconds()
+            error_msg = "请求中包含无法编码的特殊字符，请检查请求参数"
+            
+            return JsonResponse({
+                'success': False,
+                'message': error_msg,
+                'data': {
+                    'error': error_msg,
+                    'technical_details': str(e),
+                    'url': api_path,
+                    'method': method
+                }
+            })
+        except Exception as e:
+            # 其他所有异常
+            end_time = timezone.localtime(timezone.now())
+            duration = (end_time - start_time).total_seconds()
+            error_msg = "执行请求时发生未知错误，请联系管理员"
+            
+            return JsonResponse({
+                'success': False,
+                'message': error_msg,
+                'data': {
+                    'error': error_msg,
+                    'technical_details': str(e),
+                    'url': api_path,
+                    'method': method
+                }
+            })
+
         # 从响应中提取变量
-        extracted_vars = handle_variable_extraction(response_body, extractors)
+        extracted_vars, extraction_error = handle_variable_extraction(response_body, extractors)
         
         # 更新上下文变量，用于下一个请求
+        if context is None:
+            context = {}
         context.update(extracted_vars)
         
-        # 添加提取的变量到结果中
-        extracted_data = {
-            'variables': extracted_vars,
-            'context': context  # 返回完整上下文，包括之前的变量
-        }
+        # 如果提取变量过程中出现错误，记录到结果中但不影响整体执行
+        if extraction_error:
+            print(f"提取变量时出现错误: {extraction_error}")
         
         # 处理测试断言
         assertion_results = []
@@ -1366,22 +1551,22 @@ def execute_test_direct(request):
                                 'message': error_msg
                             })
                             assertion_error = error_msg
+                
+                # 修复：如果有断言定义但没有执行任何断言（结果为空），则使用HTTP状态码判断
+                if has_assertions and not assertion_results:
+                    assertions_passed = is_http_success
+                    if not is_http_success:
+                        assertion_error = f'HTTP状态码: {response.status_code} 不在成功范围内'
                     
-                    # 修复：如果有断言定义但没有执行任何断言（结果为空），则使用HTTP状态码判断
-                    if has_assertions and not assertion_results:
-                        assertions_passed = is_http_success
-                        if not is_http_success:
-                            assertion_error = f'HTTP状态码: {response.status_code} 不在成功范围内'
-                        
-                        # 添加一个默认的HTTP状态码断言结果
-                        assertion_results.append({
-                            'type': 'status_code',
-                            'expect': '200-299',
-                            'actual': response.status_code,
-                            'success': is_http_success,
-                            'message': '断言通过' if is_http_success else f'断言失败: HTTP状态码 {response.status_code} 不在成功范围内'
-                        })
-                        
+                    # 添加一个默认的HTTP状态码断言结果
+                    assertion_results.append({
+                        'type': 'status_code',
+                        'expect': '200-299',
+                        'actual': response.status_code,
+                        'success': is_http_success,
+                        'message': '断言通过' if is_http_success else f'断言失败: HTTP状态码 {response.status_code} 不在成功范围内'
+                    })
+                    
         except Exception as e:
             print(f"断言处理发生异常: {str(e)}")
             # 断言处理异常，不影响原有逻辑，仍然根据HTTP状态码判断
@@ -1396,16 +1581,7 @@ def execute_test_direct(request):
             # 没有断言，使用HTTP状态码判断
             status = 'PASS' if is_http_success else 'FAIL'
             is_success = is_http_success
-            
-        # 添加响应状态码和原始响应内容，确保错误信息可以传递
-        response_info = {
-            'status_code': response.status_code,
-            'headers': dict(response.headers),
-            'body': response_body,
-            'response_time': duration,
-            'raw_text': response.text  # 保存原始响应文本
-        }
-
+        
         # 更新测试用例的执行时间和状态
         try:
             print(f"当前时间: {current_time}")
@@ -1418,19 +1594,19 @@ def execute_test_direct(request):
                         last_assertion_results = %s,
                         update_time = %s
                     WHERE test_case_id = %s
-                """, [current_time, status.lower(), json.dumps({
+                """, [current_time, status.lower(), try_json_dumps({
                     'has_assertions': has_assertions,
                     'all_passed': assertions_passed,
                     'results': assertion_results,
                     'error': assertion_error
-                }, ensure_ascii=False), current_time, case_id])
+                }), current_time, case_id])
             
             updated_case = TestCase.objects.get(test_case_id=case_id)
             print(f"更新后状态: {updated_case.last_executed_at}, {updated_case.last_execution_result}")
         except Exception as e:
             print(f"更新测试用例状态失败: {str(e)}")
-
-        # 记录测试结果
+            
+        # 准备结果结构
         result_data = {
             'request': {
                 'url': api_path,
@@ -1440,16 +1616,22 @@ def execute_test_direct(request):
                 'body': body,
                 'body_type': body_type
             },
-            'response': response_info,
+            'response': {
+                'status_code': response.status_code,
+                'headers': dict(response.headers),
+                'body': response_body,
+                'response_time': duration,
+                'raw_text': response.text  # 保存原始响应文本
+            },
             'assertions': {
                 'has_assertions': has_assertions,
                 'all_passed': assertions_passed,
-                'results': assertion_results,
-                'error': assertion_error
+                'results': assertion_results
             },
             'extractors': {
                 'extracted_variables': extracted_vars,
-                'context': context
+                'context': context,
+                'error': extraction_error  # 添加提取器错误信息
             }
         }
 
@@ -1464,7 +1646,7 @@ def execute_test_direct(request):
                 current_time,
                 status,  # 使用正确的状态
                 duration,  # 添加持续时间
-                json.dumps(result_data, ensure_ascii=False),  # 使用正确的结果数据
+                try_json_dumps(result_data),  # 使用正确的结果数据
                 None if is_success else (
                     assertion_error if has_assertions and not assertions_passed 
                     else f'HTTP状态码: {response.status_code}'
@@ -1476,6 +1658,62 @@ def execute_test_direct(request):
             # 获取最后插入的 ID
             test_result_id = cursor.lastrowid
 
+        # 创建执行日志
+        try:
+            # 判断请求来源，区分单接口执行和自动化接口执行
+            is_automation = False
+            
+            # 检测自动化标记 - 多种检测方式确保兼容性
+            # 1. 从请求数据中检测
+            if hasattr(request, 'data') and isinstance(request.data, dict):
+                is_automation = request.data.get('is_automation', False)
+            
+            # 2. 从请求头中检测
+            if not is_automation and hasattr(request, 'META'):
+                is_automation = request.META.get('HTTP_X_AUTOMATION') == 'true'
+            
+            # 3. 从URL参数中检测
+            if not is_automation and hasattr(request, 'GET'):
+                is_automation = request.GET.get('is_automation') == 'true'
+            
+            # 打印检测结果
+            print(f"自动化检测结果: is_automation={is_automation}")
+            
+            # 只有在单接口执行时才创建日志（自动化接口执行时不创建单独的日志）
+            if not is_automation:
+                # 创建日志记录
+                log = TestExecutionLog.objects.create(
+                    case=test_case,
+                    status=status.lower(),  # 确保状态格式匹配
+                    duration=duration,
+                    executor=None,  # 默认设为None
+                    request_url=api_path,
+                    request_method=method,
+                    request_headers=try_json_dumps(headers),
+                    request_body=try_json_dumps(body),
+                    response_status_code=response.status_code,
+                    response_headers=try_json_dumps(dict(response.headers)),
+                    response_body=try_json_dumps(response_body),
+                    log_detail=f"直接执行测试用例: {test_case.case_name}",
+                    error_message=None if is_success else (
+                        assertion_error if has_assertions and not assertions_passed 
+                        else f'HTTP状态码: {response.status_code}'
+                    ),
+                    extracted_variables=try_json_dumps(extracted_vars),
+                    assertion_results=try_json_dumps({
+                        'has_assertions': has_assertions,
+                        'all_passed': assertions_passed,
+                        'results': assertion_results
+                    })
+                )
+                print(f"已创建执行日志: ID={log.log_id}，关联测试结果ID={test_result_id}")
+            else:
+                print(f"自动化接口执行，跳过创建单独的执行日志")
+        except Exception as log_error:
+            print(f"处理日志记录时出错: {str(log_error)}")
+            import traceback
+            traceback.print_exc()
+
         # 构建响应结果
         result = {
             'success': True,
@@ -1486,16 +1724,12 @@ def execute_test_direct(request):
                 'duration': duration,
                 'execution_time': current_time.strftime('%Y-%m-%d %H:%M:%S'),
                 'status_code': response.status_code,
-                'response': response_info,
-                'response_headers': dict(response.headers),  # 单独保存响应头
-                'headers': headers,  # 这里只包含请求的头信息
-                'request': {
-                    'method': method,
-                    'url': api_path,
-                    'headers': headers,
-                    'params': params,
-                    'body': body,
-                    'body_type': body_type
+                'response': {
+                    'status_code': response.status_code,
+                    'headers': dict(response.headers),
+                    'body': response_body,
+                    'response_time': duration,
+                    'raw_text': response.text  # 保存原始响应文本
                 },
                 'assertions': {
                     'has_assertions': has_assertions,
@@ -1504,7 +1738,8 @@ def execute_test_direct(request):
                 },
                 'extractors': {
                     'extracted_variables': extracted_vars,
-                    'context': context
+                    'context': context,
+                    'error': extraction_error  # 添加提取器错误信息
                 }
             }
         }
@@ -1526,12 +1761,12 @@ def execute_test_direct(request):
                         WHERE test_case_id = %s
                     """, [
                         current_time, 
-                        json.dumps({
+                        try_json_dumps({
                             'has_assertions': False, 
                             'all_passed': False,
                             'results': [],
                             'error': str(e)
-                        }, ensure_ascii=False),
+                        }),
                         current_time, 
                         test_case.test_case_id
                     ])
