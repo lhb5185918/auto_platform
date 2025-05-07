@@ -4,7 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 import json
 from django.utils import timezone
-from test_platform.models import TestPlan, TestPlanSuite, TestSuite, Project, TestPlanResult
+from test_platform.models import TestPlan, TestPlanSuite, TestSuite, Project, TestPlanResult, TestSuiteResult
 import datetime
 from test_platform.tasks import execute_test_plan
 
@@ -497,8 +497,152 @@ class TestPlanView(APIView):
                         full_result_data = json.loads(execution.result_data)
                         if isinstance(full_result_data, dict) and 'execution_summary' in full_result_data:
                             execution_summary = full_result_data.get('execution_summary', {})
+                        
+                        # 获取suite_results中的result_id和suite_id列表
+                        suite_results = full_result_data.get('suite_results', [])
+                        suite_result_ids = []
+                        suite_ids = []
+                        
+                        # 提取每个测试套件的result_id和suite_id
+                        for suite_result in suite_results:
+                            if 'result_id' in suite_result and suite_result['result_id'] is not None:
+                                suite_result_ids.append(suite_result['result_id'])
+                            if 'suite_id' in suite_result:
+                                suite_ids.append(suite_result['suite_id'])
+                        
+                        # 查询TestSuiteResult表中的数据
+                        suite_detailed_results = []
+                        
+                        # 1. 先根据result_id查询
+                        if suite_result_ids:
+                            suite_result_objs = TestSuiteResult.objects.filter(result_id__in=suite_result_ids)
+                            for suite_result_obj in suite_result_objs:
+                                try:
+                                    # 获取详细的测试套件结果数据
+                                    suite_result_data = {}
+                                    if suite_result_obj.result_data:
+                                        suite_result_data = json.loads(suite_result_obj.result_data)
+                                    
+                                    # 创建包含测试套件详细信息的结果对象
+                                    detailed_result = {
+                                        'result_id': suite_result_obj.result_id,
+                                        'suite_id': suite_result_obj.suite_id,
+                                        'suite_name': suite_result_obj.suite.name,
+                                        'status': suite_result_obj.status,
+                                        'execution_time': suite_result_obj.execution_time.strftime('%Y-%m-%d %H:%M:%S'),
+                                        'duration': suite_result_obj.duration,
+                                        'total_cases': suite_result_obj.total_cases,
+                                        'passed_cases': suite_result_obj.passed_cases,
+                                        'failed_cases': suite_result_obj.failed_cases,
+                                        'error_cases': suite_result_obj.error_cases,
+                                        'skipped_cases': suite_result_obj.skipped_cases,
+                                        'pass_rate': suite_result_obj.pass_rate,
+                                        'environment': suite_result_obj.environment.env_name if suite_result_obj.environment else None,
+                                        'result_data': suite_result_data  # 添加测试套件的完整结果数据
+                                    }
+                                    suite_detailed_results.append(detailed_result)
+                                except Exception as suite_error:
+                                    print(f"处理测试套件结果数据失败: {str(suite_error)}")
+                            
+                        # 2. 如果通过result_id没有找到数据，则尝试通过suite_id查询最新的结果
+                        if not suite_detailed_results and suite_ids:
+                            # 对于每个suite_id，查找最近的执行结果
+                            for suite_id in suite_ids:
+                                try:
+                                    # 获取最近一次执行结果
+                                    latest_suite_result = TestSuiteResult.objects.filter(
+                                        suite_id=suite_id,
+                                        execution_time__lte=execution.execution_time  # 确保结果时间不晚于计划执行时间
+                                    ).order_by('-execution_time').first()
+                                    
+                                    if latest_suite_result:
+                                        # 获取详细的测试套件结果数据
+                                        suite_result_data = {}
+                                        if latest_suite_result.result_data:
+                                            suite_result_data = json.loads(latest_suite_result.result_data)
+                                        
+                                        # 创建包含测试套件详细信息的结果对象
+                                        detailed_result = {
+                                            'result_id': latest_suite_result.result_id,
+                                            'suite_id': latest_suite_result.suite_id,
+                                            'suite_name': latest_suite_result.suite.name,
+                                            'status': latest_suite_result.status,
+                                            'execution_time': latest_suite_result.execution_time.strftime('%Y-%m-%d %H:%M:%S'),
+                                            'duration': latest_suite_result.duration,
+                                            'total_cases': latest_suite_result.total_cases,
+                                            'passed_cases': latest_suite_result.passed_cases,
+                                            'failed_cases': latest_suite_result.failed_cases,
+                                            'error_cases': latest_suite_result.error_cases,
+                                            'skipped_cases': latest_suite_result.skipped_cases,
+                                            'pass_rate': latest_suite_result.pass_rate,
+                                            'environment': latest_suite_result.environment.env_name if latest_suite_result.environment else None,
+                                            'result_data': suite_result_data  # 添加测试套件的完整结果数据
+                                        }
+                                        suite_detailed_results.append(detailed_result)
+                                except Exception as suite_error:
+                                    print(f"通过suite_id查询测试套件结果失败: {str(suite_error)}")
+                            
+                        # 添加测试套件的详细结果到full_result_data
+                        if suite_detailed_results:
+                            full_result_data['detailed_suite_results'] = suite_detailed_results
+                            
                 except Exception as e:
                     print(f"解析结果数据失败: {str(e)}")
+                
+                # 计算从detailed_suite_results获取的真实测试用例数量统计
+                detailed_case_count = 0
+                detailed_passed_cases = 0
+                detailed_failed_cases = 0
+                detailed_error_cases = 0
+                detailed_skipped_cases = 0
+                
+                # 从detailed_suite_results中获取真实的测试用例统计数据
+                suite_detailed_results = full_result_data.get('detailed_suite_results', [])
+                if suite_detailed_results:
+                    for suite_result in suite_detailed_results:
+                        detailed_case_count += suite_result.get('total_cases', 0)
+                        detailed_passed_cases += suite_result.get('passed_cases', 0)
+                        detailed_failed_cases += suite_result.get('failed_cases', 0)
+                        detailed_error_cases += suite_result.get('error_cases', 0)
+                        detailed_skipped_cases += suite_result.get('skipped_cases', 0)
+                
+                # 检查是否从日志中能提取测试用例信息（作为备选）
+                if detailed_case_count == 0:
+                    for suite_result in full_result_data.get('suite_results', []):
+                        execution_logs = suite_result.get('execution_logs', [])
+                        for log in execution_logs:
+                            log_detail = log.get('log_detail', '')
+                            # 尝试从日志中解析测试用例数量
+                            if '执行完成，共' in log_detail and '个用例' in log_detail:
+                                try:
+                                    # 示例格式: "测试套件 测试套件1 执行完成，共 2 个用例，通过 2 个，失败 0 个，错误 0 个，跳过 0 个"
+                                    parts = log_detail.split('，')
+                                    for part in parts:
+                                        if '共' in part and '个用例' in part:
+                                            detailed_case_count = int(part.split('共')[1].split('个')[0].strip())
+                                        elif '通过' in part and '个' in part:
+                                            detailed_passed_cases = int(part.split('通过')[1].split('个')[0].strip())
+                                        elif '失败' in part and '个' in part:
+                                            detailed_failed_cases = int(part.split('失败')[1].split('个')[0].strip())
+                                        elif '错误' in part and '个' in part:
+                                            detailed_error_cases = int(part.split('错误')[1].split('个')[0].strip())
+                                        elif '跳过' in part and '个' in part:
+                                            detailed_skipped_cases = int(part.split('跳过')[1].split('个')[0].strip())
+                                    # 一旦找到有效的日志，就跳出循环
+                                    if detailed_case_count > 0:
+                                        break
+                                except Exception as log_parse_error:
+                                    print(f"解析日志中的测试用例数量失败: {str(log_parse_error)}")
+                        # 如果已经从此套件的日志中找到数据，就不再继续处理其他套件
+                        if detailed_case_count > 0:
+                            break
+                
+                # 使用从测试套件结果中计算的实际值，如果没有则使用TestPlanResult表中的值
+                actual_case_count = detailed_case_count if detailed_case_count > 0 else execution.total_cases
+                actual_passed_cases = detailed_passed_cases if detailed_case_count > 0 else execution.passed_cases
+                actual_failed_cases = detailed_failed_cases if detailed_case_count > 0 else execution.failed_cases
+                actual_error_cases = detailed_error_cases if detailed_case_count > 0 else execution.error_cases
+                actual_skipped_cases = detailed_skipped_cases if detailed_case_count > 0 else execution.skipped_cases
                 
                 execution_data = {
                     'result_id': execution.result_id,
@@ -517,7 +661,14 @@ class TestPlanView(APIView):
                     'pass_rate': execution.pass_rate,
                     'executor': execution.executor.username if execution.executor else None,
                     'summary': execution_summary,
-                    'result_data': full_result_data  # 添加完整的result_data
+                    'result_data': full_result_data,  # 添加完整的result_data
+                    'case_count': actual_case_count,  # 使用计算出的实际测试用例数量
+                    'case_statistics': {  # 使用计算出的实际测试用例统计数据
+                        'passed': actual_passed_cases,
+                        'failed': actual_failed_cases,
+                        'error': actual_error_cases,
+                        'skipped': actual_skipped_cases
+                    }
                 }
                 execution_list.append(execution_data)
             

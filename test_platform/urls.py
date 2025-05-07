@@ -8,6 +8,13 @@ from test_platform.views.report_view import TestReportView
 from test_platform.views.statistics_view import TestTrendView
 from test_platform.views.log_view import ExecutionLogView
 from test_platform.views.test_plan_view import TestPlanView
+from test_platform.views.rag_view import (
+    RAGBaseView, list_external_datasets, create_api_key_config, 
+    list_workspaces, upload_knowledge_document,
+    get_upload_progress, list_knowledge_documents, upload_file
+)
+from test_platform.views.agent_view import file_parse
+from django.http import JsonResponse
 
 urlpatterns = [
     # 登录相关路由
@@ -79,6 +86,22 @@ urlpatterns = [
     path('api/test-plan/delete/<int:plan_id>', TestPlanView.as_view(), name='test_plan_delete'),
     path('api/test-plan/execute/<int:plan_id>', lambda request, plan_id: TestPlanView().execute_plan(request, plan_id), name='test_plan_execute'),
     path('api/test-plan/<int:plan_id>/executions', lambda request, plan_id: TestPlanView().get_plan_executions(request, plan_id), name='test_plan_executions'),
+
+    # RAG知识库相关路由
+    path('api/rag/', RAGBaseView.as_view(), name='rag_create'),
+    path('api/rag/list/<int:project_id>', lambda request, project_id: RAGBaseView().get(request, project_id=project_id), name='rag_list'),
+    path('api/rag/<int:rag_id>', RAGBaseView.as_view(), name='rag_detail'),
+    path('api/rag/update_key/<int:rag_id>', lambda request, rag_id: RAGBaseView().patch(request, rag_id) if request.method == 'PATCH' else RAGBaseView().get(request, rag_id), name='rag_update_key'),
+    path('api/rag/external-datasets', list_external_datasets, name='list_external_datasets'),
+    path('api/rag/config', create_api_key_config, name='create_api_key_config'),
+    path('api/rag/workspaces', list_workspaces, name='list_workspaces'),
+    path('api/rag/upload', upload_knowledge_document, name='upload_knowledge_document'),
+    path('api/rag/progress', get_upload_progress, name='get_upload_progress'),
+    path('api/rag/documents', list_knowledge_documents, name='list_knowledge_documents'),
+    path('api/rag/file/upload', upload_file, name='upload_file'),
+    
+    # 文件解析相关路由
+    path('api/agent/file/parse', file_parse, name='file_parse'),
 ]
 
 

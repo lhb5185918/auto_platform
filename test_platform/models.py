@@ -377,3 +377,187 @@ class TestPlanResult(models.Model):
         
     def __str__(self):
         return f"{self.plan.name} - {self.execution_time}"
+
+
+class RAGKnowledgeBase(models.Model):
+    """RAG知识库模型"""
+    rag_id = models.AutoField(primary_key=True, verbose_name='知识库ID')
+    name = models.CharField(max_length=100, verbose_name='知识库名称')
+    space_id = models.CharField(max_length=100, verbose_name='空间ID')
+    
+    # 知识库类型选项
+    FORMAT_TYPES = [
+        (0, '文本'),
+        (2, '图片'),
+    ]
+    format_type = models.IntegerField(choices=FORMAT_TYPES, default=0, verbose_name='知识库类型')
+    
+    # 知识库描述和图标
+    description = models.TextField(null=True, blank=True, verbose_name='知识库描述')
+    file_id = models.CharField(max_length=100, null=True, blank=True, verbose_name='图标文件ID')
+    
+    # API配置信息
+    api_key = models.CharField(max_length=500, verbose_name='API密钥', help_text='用于访问第三方RAG服务的密钥')
+    api_base = models.CharField(max_length=200, default='https://api.coze.cn', verbose_name='API基础URL')
+    
+    # 状态信息
+    STATUS_CHOICES = [
+        ('creating', '创建中'),
+        ('active', '正常'),
+        ('error', '错误'),
+        ('deleted', '已删除'),
+    ]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='creating', verbose_name='状态')
+    error_message = models.TextField(null=True, blank=True, verbose_name='错误信息')
+    
+    # 外部系统返回的知识库ID
+    external_dataset_id = models.CharField(max_length=100, null=True, blank=True, verbose_name='外部知识库ID')
+    
+    # 关联关系
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='rag_knowledge_bases', verbose_name='所属项目')
+    creator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='rag_knowledge_bases', verbose_name='创建者')
+    
+    # 时间戳
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    
+    class Meta:
+        verbose_name = 'RAG知识库'
+        verbose_name_plural = 'RAG知识库'
+        ordering = ['-create_time']
+    
+    def __str__(self):
+        return self.name
+
+
+class RAGFile(models.Model):
+    """RAG知识库文件模型"""
+    file_id = models.AutoField(primary_key=True, verbose_name='文件ID')
+    
+    # 文件信息
+    file_name = models.CharField(max_length=255, verbose_name='文件名称')
+    file_size = models.IntegerField(default=0, verbose_name='文件大小(字节)')
+    file_type = models.CharField(max_length=50, verbose_name='文件类型')
+    file_url = models.TextField(verbose_name='文件URL')
+    
+    # 外部系统返回的文件ID
+    external_file_id = models.CharField(max_length=100, null=True, blank=True, verbose_name='外部文件ID')
+    
+    # 处理状态
+    STATUS_CHOICES = [
+        ('uploading', '上传中'),
+        ('processing', '处理中'),
+        ('success', '成功'),
+        ('failed', '失败'),
+        ('deleted', '已删除'),
+    ]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='uploading', verbose_name='状态')
+    error_message = models.TextField(null=True, blank=True, verbose_name='错误信息')
+    
+    # 关联关系
+    knowledge_base = models.ForeignKey(RAGKnowledgeBase, on_delete=models.CASCADE, related_name='files', verbose_name='所属知识库')
+    uploader = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='rag_files', verbose_name='上传者')
+    
+    # 时间戳
+    upload_time = models.DateTimeField(auto_now_add=True, verbose_name='上传时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    
+    class Meta:
+        verbose_name = 'RAG文件'
+        verbose_name_plural = 'RAG文件'
+        ordering = ['-upload_time']
+    
+    def __str__(self):
+        return self.file_name
+
+
+class RAGQuery(models.Model):
+    """RAG查询记录模型"""
+    query_id = models.AutoField(primary_key=True, verbose_name='查询ID')
+    
+    # 查询信息
+    query_text = models.TextField(verbose_name='查询文本')
+    response_text = models.TextField(verbose_name='响应文本')
+    
+    # 查询参数
+    temperature = models.FloatField(default=0.7, verbose_name='温度参数')
+    max_tokens = models.IntegerField(default=2048, verbose_name='最大令牌数')
+    
+    # 查询统计
+    token_count = models.IntegerField(default=0, verbose_name='令牌数量')
+    response_time = models.FloatField(default=0, verbose_name='响应时间(秒)')
+    
+    # 引用的文件
+    referenced_files = models.TextField(null=True, blank=True, verbose_name='引用的文件')
+    
+    # 关联关系
+    knowledge_base = models.ForeignKey(RAGKnowledgeBase, on_delete=models.CASCADE, related_name='queries', verbose_name='知识库')
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='rag_queries', verbose_name='查询用户')
+    
+    # 时间戳
+    query_time = models.DateTimeField(auto_now_add=True, verbose_name='查询时间')
+    
+    class Meta:
+        verbose_name = 'RAG查询'
+        verbose_name_plural = 'RAG查询'
+        ordering = ['-query_time']
+    
+    def __str__(self):
+        return f"{self.query_text[:50]}..."
+
+
+class APIKey(models.Model):
+    """API密钥管理模型"""
+    api_key_id = models.AutoField(primary_key=True, verbose_name='密钥ID')
+    key_name = models.CharField(max_length=100, verbose_name='密钥名称')
+    
+    # API密钥信息
+    api_key = models.CharField(max_length=500, verbose_name='API密钥')
+    api_base = models.CharField(max_length=200, default='https://api.coze.cn', verbose_name='API基础URL')
+    
+    # 服务类型
+    SERVICE_TYPES = [
+        ('coze', 'Coze'),
+        ('openai', 'OpenAI'),
+        ('zhipu', '智谱AI'),
+        ('deepseek', 'DeepSeek'),
+        ('other', '其他')
+    ]
+    service_type = models.CharField(max_length=20, choices=SERVICE_TYPES, default='coze', verbose_name='服务类型')
+    
+    # 密钥状态
+    is_active = models.BooleanField(default=True, verbose_name='是否激活')
+    is_default = models.BooleanField(default=False, verbose_name='是否默认')
+    
+    # 使用限制
+    rate_limit = models.IntegerField(default=0, verbose_name='速率限制(每分钟)', help_text='0表示无限制')
+    token_limit = models.IntegerField(default=0, verbose_name='令牌限制(每月)', help_text='0表示无限制')
+    
+    # 用量统计
+    usage_count = models.IntegerField(default=0, verbose_name='使用次数')
+    last_used_at = models.DateTimeField(null=True, blank=True, verbose_name='最后使用时间')
+    
+    # 关联用户
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='api_keys', verbose_name='所属用户')
+    
+    # 时间戳
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    
+    # 项目关联（可选）
+    project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True, related_name='api_keys', verbose_name='关联项目')
+    
+    class Meta:
+        verbose_name = 'API密钥'
+        verbose_name_plural = 'API密钥'
+        ordering = ['-create_time']
+        unique_together = ['user', 'key_name']  # 同一用户下密钥名称不能重复
+    
+    def __str__(self):
+        return f"{self.key_name} ({self.service_type})"
+    
+    def save(self, *args, **kwargs):
+        # 如果设置为默认密钥，将同一用户下同一服务类型的其他密钥设为非默认
+        if self.is_default:
+            APIKey.objects.filter(user=self.user, service_type=self.service_type).update(is_default=False)
+        super().save(*args, **kwargs)

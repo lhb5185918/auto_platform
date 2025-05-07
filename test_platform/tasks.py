@@ -327,7 +327,7 @@ def execute_test_plan(plan_id):
                         failed_suites += 1
                     else:
                         error_suites += 1
-                    
+                
                     # 尝试获取执行日志，即使没有找到TestSuiteResult记录
                     execution_logs = TestExecutionLog.objects.filter(
                         suite_id=suite_id
@@ -349,10 +349,10 @@ def execute_test_plan(plan_id):
                     
                     # 添加到执行结果 (简化版本，但包含日志)
                     suite_detail = {
-                        'suite_id': suite_id,
-                        'suite_name': plan_suite.suite.name,
-                        'result_id': result_id,
-                        'status': suite_status,
+                    'suite_id': suite_id,
+                    'suite_name': plan_suite.suite.name,
+                    'result_id': result_id,
+                    'status': suite_status,
                         'duration': suite_result_data.get('data', {}).get('duration', 0),
                         'note': '无法获取详细结果信息',
                         'execution_logs': log_entries  # 添加执行日志记录
@@ -546,7 +546,7 @@ def send_plan_execution_notification(plan_id, result_id):
             'result_id': result_id,
             'notify_types': notify_types
         }
-            
+    
     except Exception as e:
         logger.error(f"发送通知失败: {str(e)}")
         return {
@@ -565,24 +565,24 @@ def check_scheduled_test_plans():
         
         now = timezone.now()
         logger.info(f"开始检查定时测试计划: {now}")
-        
+    
         # 查找一次性执行计划（状态为pending且执行时间已到）
         once_plans = TestPlan.objects.filter(
             status='pending',
             schedule_type='once',
             execute_time__lte=now
         )
-        
+    
         for plan in once_plans:
             logger.info(f"执行一次性测试计划: {plan.name} (ID: {plan.plan_id})")
             execute_test_plan.delay(plan.plan_id)
-            
+    
         # 处理每日执行的计划
         daily_plans = TestPlan.objects.filter(
             status='pending',
             schedule_type='daily'
         )
-        
+
         for plan in daily_plans:
             if plan.execute_time:
                 # 检查当天的执行时间是否已到
@@ -591,19 +591,19 @@ def check_scheduled_test_plans():
                 if now_time >= plan_time and (now - now.replace(hour=plan_time.hour, minute=plan_time.minute, second=0)).total_seconds() < 120:
                     logger.info(f"执行每日测试计划: {plan.name} (ID: {plan.plan_id})")
                     execute_test_plan.delay(plan.plan_id)
-        
+
         # 处理每周执行的计划
         weekly_plans = TestPlan.objects.filter(
             status='pending',
             schedule_type='weekly'
         )
-        
+
         for plan in weekly_plans:
             if plan.execute_time:
                 # 检查当天是否是计划的执行星期几
                 plan_weekday = plan.execute_time.weekday()
                 now_weekday = now.weekday()
-                
+
                 if now_weekday == plan_weekday:
                     # 再检查时间是否已到
                     plan_time = plan.execute_time.time()
@@ -611,20 +611,20 @@ def check_scheduled_test_plans():
                     if now_time >= plan_time and (now - now.replace(hour=plan_time.hour, minute=plan_time.minute, second=0)).total_seconds() < 120:
                         logger.info(f"执行每周测试计划: {plan.name} (ID: {plan.plan_id})")
                         execute_test_plan.delay(plan.plan_id)
-        
+
         # 处理Cron表达式的执行计划
         cron_plans = TestPlan.objects.filter(
             status='pending',
             schedule_type='cron',
         ).exclude(cron_expression='')
-        
+
         for plan in cron_plans:
             try:
                 # 检查cron表达式是否有效
                 cron = croniter(plan.cron_expression, now)
                 # 获取下一次执行时间
                 next_run = cron.get_prev(datetime)
-                
+
                 # 如果最近一次执行时间在当前时间的前2分钟内，则执行任务
                 time_diff = (now - timezone.make_aware(next_run)).total_seconds()
                 if 0 <= time_diff < 120:
@@ -632,9 +632,8 @@ def check_scheduled_test_plans():
                     execute_test_plan.delay(plan.plan_id)
             except Exception as e:
                 logger.error(f"解析CRON表达式出错: {plan.name} (ID: {plan.plan_id}), 错误: {str(e)}")
-                
+
         return f"检查完成: 发现 {once_plans.count()} 个一次性计划"
-            
     except Exception as e:
         logger.error(f"检查测试计划时出错: {str(e)}")
         return f"检查失败: {str(e)}"
