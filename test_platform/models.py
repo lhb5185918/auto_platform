@@ -537,6 +537,9 @@ class APIKey(models.Model):
     usage_count = models.IntegerField(default=0, verbose_name='使用次数')
     last_used_at = models.DateTimeField(null=True, blank=True, verbose_name='最后使用时间')
     
+    # 配置信息（JSON格式）
+    config = models.TextField(null=True, blank=True, verbose_name='配置信息', help_text='JSON格式的额外配置参数')
+    
     # 关联用户
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='api_keys', verbose_name='所属用户')
     

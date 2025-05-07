@@ -13,7 +13,7 @@ from test_platform.views.rag_view import (
     list_workspaces, upload_knowledge_document,
     get_upload_progress, list_knowledge_documents, upload_file
 )
-from test_platform.views.agent_view import file_parse
+from test_platform.views.agent_view import file_parse, save_deepseek_config, get_deepseek_config, create_test_case, export_test_cases
 from django.http import JsonResponse
 
 urlpatterns = [
@@ -102,6 +102,15 @@ urlpatterns = [
     
     # 文件解析相关路由
     path('api/agent/file/parse', file_parse, name='file_parse'),
+    
+    # 测试用例创建路由
+    path('api/agent/create-test-case', create_test_case, name='create_test_case'),
+    
+    # 测试用例导出路由
+    path('api/agent/export-test-case', export_test_cases, name='export_test_cases'),
+    
+    # DeepSeek API配置相关路由
+    path('api/config/deepseek', save_deepseek_config, name='deepseek_config'),
 ]
 
 

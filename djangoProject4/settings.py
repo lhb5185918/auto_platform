@@ -172,7 +172,38 @@ SIMPLE_JWT = {
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
 
+# CORS配置
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+# CSRF配置
+CSRF_TRUSTED_ORIGINS = [
+    'http://localhost:5174',
+    'http://localhost:8080',
+    'http://localhost:8081',
+    'http://127.0.0.1:5174',
+    'http://127.0.0.1:8080',
+    'http://127.0.0.1:8081'
+]
 
 # Celery配置
 CELERY_BROKER_URL = 'redis://47.94.195.221:6379/0'  # 使用Redis作为消息代理
