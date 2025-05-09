@@ -325,9 +325,14 @@ class TestCaseView(APIView):
             case_extractors = self._process_extractors(request.data.get('extractors'))
             case_tests = self._process_tests(request.data.get('tests'))
 
+            # 将params转换为JSON格式
+            processed_params = self._process_body(case_params)
+
             # 打印调试信息
             print(f"请求的body: {request.data.get('body')}")
             print(f"处理后的body: {case_body}")
+            print(f"请求的params: {case_params}")
+            print(f"处理后的params: {processed_params}")
             print(f"请求的extractors: {request.data.get('extractors')}")
             print(f"处理后的extractors: {case_extractors}")
             print(f"请求的tests: {request.data.get('tests')}")
@@ -350,6 +355,7 @@ class TestCaseView(APIView):
                 case_expect_result=expected_result,
                 case_extractors=case_extractors,  # 添加提取器
                 case_tests=case_tests,  # 添加测试断言
+                case_params=processed_params,  # 添加处理后的params
                 project=project,
                 creator=request.user,
                 last_execution_result='not_run'
@@ -379,6 +385,62 @@ class TestCaseView(APIView):
 
     def put(self, request, case_id):
         try:
+            # 检查请求路径是否包含status，如果是，则只更新状态
+            # 注意：这是针对/api/testcase/status/{case_id}路径的特殊处理
+            if request.path.endswith(f'/status/{case_id}'):
+                try:
+                    test_case = TestCase.objects.get(test_case_id=case_id)
+                except TestCase.DoesNotExist:
+                    return JsonResponse({
+                        'code': 404,
+                        'message': '测试用例不存在',
+                        'data': None
+                    }, status=404)
+                
+                # 获取状态信息
+                status = request.data.get('status', '')
+                
+                # 状态映射
+                status_map = {
+                    '通过': 'pass',
+                    '失败': 'fail',
+                    '错误': 'error',
+                    '跳过': 'skip',
+                    '未执行': 'not_run'
+                }
+                
+                # 更新状态
+                if status in status_map:
+                    # 只更新状态和最后执行时间，不修改其他字段
+                    current_time = timezone.now()
+                    
+                    # 使用update方法只更新指定字段，避免其他字段被清空
+                    TestCase.objects.filter(test_case_id=case_id).update(
+                        last_execution_result=status_map[status],
+                        last_executed_at=current_time,
+                        update_time=current_time
+                    )
+                    
+                    # 打印日志
+                    print(f"PUT更新后状态: {current_time}, {status_map[status]}")
+                    
+                    return JsonResponse({
+                        'code': 200,
+                        'message': '测试用例状态更新成功',
+                        'data': {
+                            'case_id': case_id,
+                            'status': status_map[status],
+                            'update_time': current_time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                    })
+                else:
+                    return JsonResponse({
+                        'code': 400,
+                        'message': f'无效的状态值: {status}',
+                        'data': None
+                    }, status=400)
+            
+            # 正常的PUT请求处理（更新整个测试用例）
             test_case = TestCase.objects.get(test_case_id=case_id)
             
             case_name = request.data.get('title')
@@ -391,6 +453,9 @@ class TestCaseView(APIView):
             priority_map = {'低': 0, '中': 1, '高': 2}
             case_priority = priority_map.get(request.data.get('priority'), 0)
             expected_result = request.data.get('expected_result', '{}')  # 提供空JSON作为默认值
+            
+            # 处理params参数
+            processed_params = self._process_body(case_params)
             
             # 明确获取并处理extractors字段
             raw_extractors = request.data.get('extractors', [])
@@ -410,22 +475,45 @@ class TestCaseView(APIView):
             # 打印调试信息
             print(f"请求的body: {request.data.get('body')}")
             print(f"处理后的body: {case_body}")
+            print(f"请求的params: {case_params}")
+            print(f"处理后的params: {processed_params}")
+            print(f"用例标题: {case_name}")
 
-            test_case.case_name = case_name
-            test_case.case_path = case_path
-            test_case.case_requests_body = case_body
-            test_case.case_request_headers = case_headers  # 使用处理后的headers
-            test_case.case_request_method = case_method
-            test_case.case_assert_contents = case_assertions
-            test_case.case_params = case_params
-            test_case.case_priority = case_priority
-            test_case.case_expect_result = expected_result
-            test_case.case_extractors = case_extractors  # 更新提取器
-            test_case.case_tests = case_tests  # 更新测试断言
+            # 准备更新字段，只包含非空字段
+            update_fields = {}
             
-            test_case.save()
+            # 只有在提供了非空值时才更新相应字段
+            if case_name not in [None, '']:
+                update_fields['case_name'] = case_name
+            if case_path not in [None, '']:
+                update_fields['case_path'] = case_path
+            if case_body not in [None, '']:
+                update_fields['case_requests_body'] = case_body
+            if case_headers not in [None, '']:
+                update_fields['case_request_headers'] = case_headers
+            if case_method not in [None, '']:
+                update_fields['case_request_method'] = case_method
             
-            # 验证存储是否成功
+            # 其他字段可以为空，但我们也只在有值时更新
+            if case_assertions is not None:
+                update_fields['case_assert_contents'] = case_assertions
+            if processed_params is not None:
+                update_fields['case_params'] = processed_params
+            
+            update_fields['case_priority'] = case_priority
+            update_fields['case_expect_result'] = expected_result
+            update_fields['case_extractors'] = case_extractors
+            update_fields['case_tests'] = case_tests
+            update_fields['update_time'] = timezone.now()
+            
+            # 确保update_fields不为空
+            if update_fields:
+                # 使用filter和update方法更新数据
+                TestCase.objects.filter(test_case_id=case_id).update(**update_fields)
+            else:
+                print("没有可更新的字段")
+
+            # 重新获取更新后的对象
             updated_case = TestCase.objects.get(test_case_id=case_id)
             print(f"保存后的extractors: {updated_case.case_extractors}")
             
@@ -466,7 +554,14 @@ class TestCaseView(APIView):
     def patch(self, request, case_id):
         """更新测试用例执行状态"""
         try:
-            test_case = TestCase.objects.get(test_case_id=case_id)
+            try:
+                test_case = TestCase.objects.get(test_case_id=case_id)
+            except TestCase.DoesNotExist:
+                return JsonResponse({
+                    'code': 404,
+                    'message': '测试用例不存在',
+                    'data': None
+                }, status=404)
             
             # 获取状态信息
             status = request.data.get('status', '')
@@ -482,39 +577,364 @@ class TestCaseView(APIView):
             
             # 更新状态
             if status in status_map:
-                test_case.last_execution_result = status_map[status]
-                test_case.last_executed_at = timezone.now()
-                test_case.save()
+                # 只更新状态和最后执行时间，不修改其他字段
+                current_time = timezone.now()
+                
+                # 使用update方法只更新指定字段，避免其他字段被清空
+                TestCase.objects.filter(test_case_id=case_id).update(
+                    last_execution_result=status_map[status],
+                    last_executed_at=current_time,
+                    update_time=current_time
+                )
+                
+                # 打印日志
+                print(f"更新后状态: {current_time}, {status_map[status]}")
                 
                 return JsonResponse({
                     'code': 200,
                     'message': '测试用例状态更新成功',
                     'data': {
-                        'id': test_case.test_case_id,
-                        'name': test_case.case_name,
-                        'status': status,
-                        'execution_time': test_case.last_executed_at.strftime('%Y-%m-%d %H:%M:%S')
+                        'case_id': case_id,
+                        'status': status_map[status],
+                        'update_time': current_time.strftime('%Y-%m-%d %H:%M:%S')
                     }
                 })
             else:
                 return JsonResponse({
                     'code': 400,
-                    'message': f'无效的状态值：{status}，有效值为：通过、失败、错误、跳过、未执行',
+                    'message': f'无效的状态值: {status}',
                     'data': None
                 }, status=400)
-
-        except TestCase.DoesNotExist:
-            return JsonResponse({
-                'code': 404,
-                'message': '测试用例不存在',
-                'data': None
-            }, status=404)
+                
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return JsonResponse({
                 'code': 500,
                 'message': f'更新测试用例状态失败：{str(e)}',
                 'data': None
             }, status=500)
+
+    def delete(self, request, case_id):
+        """
+        删除测试用例
+        """
+        try:
+            # 查找测试用例
+            try:
+                test_case = TestCase.objects.get(test_case_id=case_id)
+            except TestCase.DoesNotExist:
+                return JsonResponse({
+                    'code': 404,
+                    'message': '测试用例不存在',
+                    'data': None
+                }, status=404)
+            
+            # 检查是否存在关联的测试套件用例
+            suite_cases = TestSuiteCase.objects.filter(original_case_id=case_id)
+            if suite_cases.exists():
+                # 获取所有关联的套件名称
+                suite_names = []
+                for suite_case in suite_cases:
+                    try:
+                        suite_name = suite_case.suite.name
+                        suite_names.append(suite_name)
+                    except:
+                        pass
+                
+                if suite_names:
+                    return JsonResponse({
+                        'code': 400,
+                        'message': f'测试用例已被以下测试套件引用，无法删除: {", ".join(suite_names)}',
+                        'data': None
+                    }, status=400)
+            
+            # 检查是否存在测试结果
+            results = TestResult.objects.filter(case=test_case)
+            
+            # 先删除关联的测试结果记录
+            if results.exists():
+                results.delete()
+                
+            # 删除关联的执行日志
+            logs = TestExecutionLog.objects.filter(case=test_case)
+            if logs.exists():
+                logs.delete()
+            
+            # 执行删除操作
+            project_id = test_case.project.project_id
+            case_name = test_case.case_name
+            test_case.delete()
+            
+            return JsonResponse({
+                'code': 200,
+                'message': f'测试用例"{case_name}"已成功删除',
+                'data': {
+                    'project_id': project_id,
+                    'case_id': case_id
+                }
+            })
+            
+        except Exception as e:
+            import traceback
+            traceback_str = traceback.format_exc()
+            return JsonResponse({
+                'code': 500,
+                'message': f'删除测试用例时发生错误: {str(e)}',
+                'data': {
+                    'error': str(e),
+                    'traceback': traceback_str
+                }
+            }, status=500)
+    
+    def get(self, request, case_id=None, project_id=None):
+        """
+        获取测试用例详情或列表
+        - 如果有case_id，则返回单个测试用例详情
+        - 如果有project_id，则返回项目下的测试用例列表
+        """
+        # 处理单个测试用例查询
+        if case_id is not None:
+            try:
+                test_case = TestCase.objects.get(test_case_id=case_id)
+                
+                # 处理headers
+                try:
+                    headers = json.loads(test_case.case_request_headers) if test_case.case_request_headers else {}
+                except json.JSONDecodeError:
+                    headers = {}
+
+                # 处理body
+                try:
+                    if test_case.case_requests_body:
+                        if isinstance(test_case.case_requests_body, str):
+                            try:
+                                body = json.loads(test_case.case_requests_body)
+                            except json.JSONDecodeError:
+                                body = test_case.case_requests_body
+                        else:
+                            body = test_case.case_requests_body
+                    else:
+                        body = {}
+                except Exception as e:
+                    body = test_case.case_requests_body or {}
+
+                # 处理expected_result
+                try:
+                    expected_result = json.loads(test_case.case_expect_result) if test_case.case_expect_result else {}
+                except json.JSONDecodeError:
+                    expected_result = {}
+                    
+                # 处理extractors
+                try:
+                    extractors = json.loads(test_case.case_extractors) if test_case.case_extractors else []
+                except json.JSONDecodeError:
+                    extractors = []
+                    
+                # 处理tests
+                try:
+                    tests = json.loads(test_case.case_tests) if test_case.case_tests else []
+                except json.JSONDecodeError:
+                    tests = []
+
+                # 处理params
+                try:
+                    params = json.loads(test_case.case_params) if test_case.case_params else {}
+                except json.JSONDecodeError:
+                    params = test_case.case_params or {}
+
+                # 构建响应数据
+                case_data = {
+                    'case_id': test_case.test_case_id,
+                    'title': test_case.case_name,
+                    'api_path': test_case.case_path,
+                    'method': test_case.case_request_method,
+                    'priority': test_case.get_case_priority_display(),
+                    'status': '未执行' if test_case.last_execution_result in ['not_run', None] else test_case.last_execution_result,
+                    'headers': headers,
+                    'params': params,
+                    'body': body,
+                    'expected_result': expected_result,
+                    'assertions': test_case.case_assert_contents or '',
+                    'extractors': extractors,
+                    'tests': tests,
+                    'project_id': test_case.project.project_id,
+                    'creator': {
+                        'id': test_case.creator.id if test_case.creator else None,
+                        'username': test_case.creator.username if test_case.creator else None
+                    },
+                    'create_time': test_case.create_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'update_time': test_case.update_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'last_execution_time': test_case.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if test_case.last_executed_at else None
+                }
+
+                return JsonResponse({
+                    'code': 200,
+                    'message': 'success',
+                    'data': case_data
+                })
+                
+            except TestCase.DoesNotExist:
+                return JsonResponse({
+                    'code': 404,
+                    'message': '测试用例不存在',
+                    'data': None
+                }, status=404)
+            except Exception as e:
+                return JsonResponse({
+                    'code': 500,
+                    'message': str(e),
+                    'data': None
+                }, status=500)
+                
+        # 处理测试用例列表查询（与原有的get方法逻辑保持一致）
+        elif project_id is not None:
+            try:
+                # 获取查询参数
+                page = int(request.GET.get('page', 1))
+                page_size = int(request.GET.get('pageSize', 10))
+                keyword = request.GET.get('keyword', '')
+                status = request.GET.get('status', '')
+                priority = request.GET.get('priority', '')
+
+                # 构建基础查询
+                queryset = TestCase.objects.filter(project_id=project_id)
+
+                # 关键字搜索（标题）
+                if keyword:
+                    queryset = queryset.filter(case_name__icontains=keyword)
+
+                # 状态过滤
+                if status:
+                    if status == '未执行':
+                        queryset = queryset.filter(
+                            Q(last_execution_result='not_run') |
+                            Q(last_execution_result__isnull=True)
+                        )
+                    elif status == '通过':
+                        queryset = queryset.filter(last_execution_result='pass')
+                    elif status == '失败':
+                        queryset = queryset.filter(last_execution_result='fail')
+                    elif status == '错误':
+                        queryset = queryset.filter(last_execution_result='error')
+
+                # 优先级过滤
+                if priority:
+                    priority_map = {
+                        '高': 2,
+                        '中': 1,
+                        '低': 0
+                    }
+                    if priority in priority_map:
+                        queryset = queryset.filter(case_priority=priority_map[priority])
+
+                # 按创建时间倒序排序
+                queryset = queryset.order_by('-create_time')
+
+                # 计算总数
+                total = queryset.count()
+
+                # 分页
+                start = (page - 1) * page_size
+                end = start + page_size
+                test_cases = queryset[start:end]
+
+                # 按原有格式构建返回数据
+                test_cases_data = []
+                for test_case in test_cases:
+                    # 处理 headers
+                    try:
+                        headers = json.loads(test_case.case_request_headers) if test_case.case_request_headers else {}
+                    except json.JSONDecodeError:
+                        headers = {}
+
+                    # 处理 body
+                    try:
+                        # 先尝试解析为JSON对象
+                        if test_case.case_requests_body:
+                            if isinstance(test_case.case_requests_body, str):
+                                try:
+                                    # 尝试将Python字典字符串转为Python对象
+                                    if test_case.case_requests_body.strip().startswith('{') and "'" in test_case.case_requests_body:
+                                        import ast
+                                        body_dict = ast.literal_eval(test_case.case_requests_body)
+                                        body = body_dict
+                                    else:
+                                        # 尝试直接解析为JSON
+                                        body = json.loads(test_case.case_requests_body)
+                                except:
+                                    # 如果不是有效的JSON字符串，保留原始值
+                                    body = test_case.case_requests_body
+                            else:
+                                # 非字符串类型，尝试直接使用
+                                body = test_case.case_requests_body
+                        else:
+                            body = {}
+                    except Exception as e:
+                        body = test_case.case_requests_body or {}
+
+                    # 处理 expected_result
+                    try:
+                        expected_result = json.loads(test_case.case_expect_result) if test_case.case_expect_result else {}
+                    except json.JSONDecodeError:
+                        expected_result = {}
+                        
+                    # 处理 extractors
+                    try:
+                        extractors = json.loads(test_case.case_extractors) if test_case.case_extractors else []
+                    except json.JSONDecodeError:
+                        extractors = []
+                        
+                    # 处理 tests
+                    try:
+                        tests = json.loads(test_case.case_tests) if test_case.case_tests else []
+                    except json.JSONDecodeError:
+                        tests = []
+
+                    test_cases_data.append({
+                        'case_id': test_case.test_case_id,
+                        'title': test_case.case_name,
+                        'api_path': test_case.case_path,
+                        'method': test_case.case_request_method,
+                        'priority': test_case.get_case_priority_display(),
+                        'status': '未执行' if test_case.last_execution_result in ['not_run', None] else test_case.last_execution_result,
+                        'headers': headers,
+                        'params': test_case.case_params or '',
+                        'body': body,
+                        'expected_result': expected_result,
+                        'assertions': test_case.case_assert_contents or '',
+                        'extractors': extractors,
+                        'tests': tests,
+                        'creator': {
+                            'id': test_case.creator.id if test_case.creator else None,
+                            'username': test_case.creator.username if test_case.creator else None
+                        },
+                        'create_time': test_case.create_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'update_time': test_case.update_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'last_execution_time': test_case.last_executed_at.strftime('%Y-%m-%d %H:%M:%S') if test_case.last_executed_at else None
+                    })
+
+                return JsonResponse({
+                    'code': 200,
+                    'message': 'success',
+                    'data': {
+                        'total': total,
+                        'testCases': test_cases_data
+                    }
+                })
+
+            except Exception as e:
+                return JsonResponse({
+                    'code': 500,
+                    'message': str(e),
+                    'data': None
+                }, status=500)
+        else:
+            return JsonResponse({
+                'code': 400,
+                'message': '缺少必要的参数',
+                'data': None
+            }, status=400)
 
 
 class TestEnvironmentView(APIView):
@@ -1310,7 +1730,7 @@ class TestSuiteView(APIView):
                                                 self.GET.update({k: v[0] for k, v in param_dict.items()})
                                         except:
                                             pass  # 如果解析失败，保留URL中的参数
-                                        
+                                
                                 # 添加POST和DELETE请求的空处理
                                 self.POST = {}
                                 self.DELETE = {}
@@ -1327,6 +1747,11 @@ class TestSuiteView(APIView):
                                 print(f"处理后的GET参数: {self.GET}")
                                 
                                 self._body = self.body  # Django内部使用_body
+                                
+                                # 确保params字段可以被execute_test_direct函数访问到
+                                # 这是关键的修改：确保params字段在直接执行时可用
+                                if self.method == 'GET':
+                                    self.data['params'] = self.GET
                         
                         # 创建模拟请求
                         mock_request = MockRequest(execute_data)

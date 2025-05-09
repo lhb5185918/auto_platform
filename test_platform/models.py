@@ -564,3 +564,47 @@ class APIKey(models.Model):
         if self.is_default:
             APIKey.objects.filter(user=self.user, service_type=self.service_type).update(is_default=False)
         super().save(*args, **kwargs)
+
+
+class AnalysisResult(models.Model):
+    """AI分析结果模型，保存文件分析结果"""
+    analysis_id = models.AutoField(primary_key=True, verbose_name='分析ID')
+    file_name = models.CharField(max_length=255, verbose_name='文件名')
+    file_type = models.CharField(max_length=50, verbose_name='文件类型')
+    deepseek_response = models.TextField(verbose_name='DeepSeek响应', null=True, blank=True)
+    sheets_data = models.TextField(verbose_name='解析的表格数据', null=True, blank=True)
+    test_cases_data = models.TextField(verbose_name='测试用例数据', null=True, blank=True)
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    creator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='analysis_results',
+                                verbose_name='创建者')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True, 
+                                related_name='analysis_results', verbose_name='项目')
+    
+    def __str__(self):
+        return f"{self.file_name} - {self.create_time.strftime('%Y-%m-%d %H:%M:%S')}"
+    
+    class Meta:
+        ordering = ['-create_time']
+        verbose_name = 'AI分析结果'
+        verbose_name_plural = 'AI分析结果'
+
+
+class TestMindMap(models.Model):
+    """测试脑图模型"""
+    mindmap_id = models.AutoField(primary_key=True)
+    name = models.CharField(max_length=100, verbose_name='脑图名称')
+    data = models.TextField(verbose_name='脑图数据')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='mindmaps', verbose_name='所属项目')
+    creator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='创建人')
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    update_time = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        verbose_name = '测试脑图'
+        verbose_name_plural = '测试脑图'
+        db_table = 'test_platform_testmindmap'
+        ordering = ['-update_time']
+
+    def __str__(self):
+        return self.name

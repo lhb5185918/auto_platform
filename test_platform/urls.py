@@ -8,12 +8,14 @@ from test_platform.views.report_view import TestReportView
 from test_platform.views.statistics_view import TestTrendView
 from test_platform.views.log_view import ExecutionLogView
 from test_platform.views.test_plan_view import TestPlanView
+from test_platform.views.mindmap_view import MindMapView
 from test_platform.views.rag_view import (
     RAGBaseView, list_external_datasets, create_api_key_config, 
     list_workspaces, upload_knowledge_document,
     get_upload_progress, list_knowledge_documents, upload_file
 )
-from test_platform.views.agent_view import file_parse, save_deepseek_config, get_deepseek_config, create_test_case, export_test_cases
+from test_platform.views.agent_view import file_parse, save_deepseek_config, get_deepseek_config, create_test_case, export_test_cases, edit_test_case, batch_edit_test_cases, save_analysis_result, get_analysis_results, get_analysis_result_detail
+from test_platform.views.assistant_view import chat_stream
 from django.http import JsonResponse
 
 urlpatterns = [
@@ -31,8 +33,10 @@ urlpatterns = [
     # 测试用例相关路由
     path('api/testcase/list/<int:project_id>', TestCaseView.as_view(), name='testcase_list'),
     path('api/testcase/create/', TestCaseView.as_view(), name='testcase_create'),
+    path('api/testcase/', TestCaseView.as_view(), name='testcase_root'),
     path('api/testcase/update/<int:case_id>/', TestCaseView.as_view(), name='testcase_update'),
     path('api/testcase/status/<int:case_id>', TestCaseView.as_view(), name='testcase_status_update'),
+    path('api/testcases/<int:case_id>', TestCaseView.as_view(), name='testcase_delete'),
     path('api/env/create', TestEnvironmentView.as_view(), name='env_create'),
     path('api/env/list/<int:project_id>', TestEnvironmentView.as_view(), name='env_list'),
 
@@ -48,9 +52,11 @@ urlpatterns = [
     path('api/execute_test/', execute.execute_test, name='execute_test'),
 
     # 测试用例执行相关路由
-    path('api/testcase/execute/<int:case_id>', execute.execute_test, name='execute_test'),
-    path('api/testcase/execute_direct/', execute.execute_test_direct, name='execute_test_direct'),
-    
+    path('api/testcase/execute', execute.execute_test, name='execute_test'),
+    path('api/testcase/execute/<int:case_id>', execute.execute_test, name='execute_test_with_id'),
+    path('api/testcase/execute_direct', execute.execute_test_direct, name='execute_test_direct'),
+    path('api/testcase/run', execute.execute_debug, name='execute_debug'),
+
     # 测试用例更新相关路由
     path('api/testcase/update/<int:case_id>', execute.update_suite_case, name='update_suite_case'),
 
@@ -70,6 +76,12 @@ urlpatterns = [
     path('api/report/detail/<int:result_id>', TestReportView.as_view(), name='report_detail'),
     path('api/report/delete/<int:result_id>', TestReportView.as_view(), name='report_delete'),
     path('api/report/response/<int:result_id>', execute.get_suite_result_response, name='suite_result_response'),
+    
+    # 测试脑图相关路由
+    path('api/mindmap/save', MindMapView.as_view(), name='mindmap_save'),
+    path('api/mindmap/list', MindMapView.as_view(), name='mindmap_list'),
+    path('api/mindmap/<int:mindmap_id>', MindMapView.as_view(), name='mindmap_detail'),
+    path('api/mindmap/delete/<int:mindmap_id>', MindMapView.as_view(), name='mindmap_delete'),
     
     # 统计相关路由
     path('api/statistics/trend', TestTrendView.as_view(), name='statistics_trend'),
@@ -106,11 +118,27 @@ urlpatterns = [
     # 测试用例创建路由
     path('api/agent/create-test-case', create_test_case, name='create_test_case'),
     
+    # 测试用例编辑路由
+    path('api/agent/edit-test-case', edit_test_case, name='edit_test_case'),
+    
+    # 测试用例批量编辑路由
+    path('api/agent/batch-edit-test-cases', batch_edit_test_cases, name='batch_edit_test_cases'),
+    
     # 测试用例导出路由
     path('api/agent/export-test-case', export_test_cases, name='export_test_cases'),
     
     # DeepSeek API配置相关路由
     path('api/config/deepseek', save_deepseek_config, name='deepseek_config'),
+    
+    # 保存分析结果路由
+    path('api/analysis/save', save_analysis_result, name='save_analysis_result'),
+    # 查询分析结果列表路由
+    path('api/analysis/results', get_analysis_results, name='get_analysis_results'),
+    # 查询分析结果详情路由
+    path('api/analysis/results/<int:analysis_id>', get_analysis_result_detail, name='get_analysis_result_detail'),
+
+    # 智能助手流式对话接口
+    path('api/assistant/chat', chat_stream, name='assistant_chat'),
 ]
 
 

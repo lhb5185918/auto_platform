@@ -294,10 +294,9 @@ class FileParseView(APIView):
             # 调用DeepSeek API
             logger.info(f"开始调用DeepSeek API，模型: {model}, 温度: {temperature}")
             start_time = time.time()
-            response = client.chat.completions.create(
-                model=model,  # 使用配置中的模型
-                messages=[
-                    {"role": "system", "content": """
+            
+            # 构建系统提示信息
+            system_prompt = """
 # 接口测试用例生成指南
 
 你是一个专业的API测试工程师，需要从输入的文件内容中提取测试用例信息，并生成标准格式的接口测试用例。
@@ -349,12 +348,18 @@ class FileParseView(APIView):
 6. 确保生成的测试用例符合上述格式规范
 
 请分析以下文件内容，生成符合要求的测试用例：
-"""},
-                    {"role": "user", "content": message_content}
-                ],
-                temperature=temperature,  # 使用配置中的温度参数
-                stream=False
+"""
+            
+            # 使用分批处理函数处理大型数据
+            content = process_large_data_with_llm(
+                message_content,
+                client,
+                model,
+                temperature,
+                max_chunk_size=8000,  # 根据模型token限制调整
+                system_prompt=system_prompt
             )
+            
             end_time = time.time()
             logger.info(f"DeepSeek API调用完成，耗时: {end_time - start_time:.2f} 秒")
             
@@ -365,18 +370,18 @@ class FileParseView(APIView):
                 last_used_at=timezone.now()
             )
             
-            # 将响应对象转为字典返回
-            logger.debug(f"解析DeepSeek响应，ID: {response.id}")
+            # 构造响应对象
+            response_id = str(uuid.uuid4())
             deepseek_response = {
                 "status": "success",
                 "model": model,
-                "content": response.choices[0].message.content,
-                "id": response.id,
-                "created": response.created,
-                "finish_reason": response.choices[0].finish_reason,
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens
+                "content": content,  # 使用处理后的内容
+                "id": response_id,
+                "created": int(time.time()),
+                "finish_reason": "stop",
+                "prompt_tokens": len(message_content) // 4,  # 估算token数量
+                "completion_tokens": len(content) // 4,  # 估算token数量
+                "total_tokens": (len(message_content) + len(content)) // 4  # 估算token数量
             }
             
             logger.info(f"DeepSeek响应处理完成，总令牌数: {deepseek_response['total_tokens']}")
@@ -611,84 +616,99 @@ class FileParseView(APIView):
         :param file: 上传的docx文件
         :return: 解析结果，包含文档内容和结构信息
         """
+        logger.info(f"开始解析Word文档: {file.name}")
+        
         # 使用python-docx库解析文档
-        doc = docx.Document(file)
-        
-        # 提取文档内容
-        content = {
-            'paragraphs': [],
-            'tables': []
-        }
-        
-        # 提取段落
-        for para in doc.paragraphs:
-            if para.text.strip():
-                content['paragraphs'].append({
-                    'text': para.text,
-                    'style': para.style.name if para.style else 'Normal'
-                })
-        
-        # 提取表格
-        for i, table in enumerate(doc.tables):
-            table_data = []
-            for row in table.rows:
-                row_data = []
-                for cell in row.cells:
-                    row_data.append(cell.text)
-                table_data.append(row_data)
-            content['tables'].append({
-                'id': i + 1,
-                'data': table_data
-            })
-        
-        # 将段落和表格内容转换为表格式数据
-        sheets_data = []
-        
-        # 将段落转换为表格数据
-        paragraphs_data = []
-        for i, para in enumerate(content['paragraphs']):
-            paragraphs_data.append({
-                'ID': i + 1,
-                '段落内容': para['text'],
-                '样式': para['style']
-            })
-        
-        # 将表格内容转换为统一格式
-        tables_data = []
-        for table in content['tables']:
-            if table['data'] and len(table['data']) > 0:
-                # 获取表头
-                headers = ["列" + str(i+1) for i in range(len(table['data'][0]))]
-                
-                # 构建表格数据
-                for row_idx, row in enumerate(table['data']):
-                    row_dict = {'行号': row_idx + 1}
-                    for col_idx, cell in enumerate(row):
-                        row_dict[headers[col_idx]] = cell
-                    tables_data.append(row_dict)
-        
-        # 将所有内容整合到sheets中
-        sheets = [
-            {
-                'name': '文档段落',
-                'data': paragraphs_data
+        try:
+            doc = docx.Document(file)
+            logger.debug("成功加载Word文档")
+            
+            # 提取文档内容
+            content = {
+                'paragraphs': [],
+                'tables': []
             }
-        ]
-        
-        # 如果有表格数据，添加到sheets中
-        if tables_data:
-            sheets.append({
-                'name': '文档表格',
-                'data': tables_data
-            })
-        
-        # 返回解析结果
-        return {
-            'file_type': 'docx',
-            'file_name': file.name,
-            'content': content,  # 保留原始content字段以保持兼容性
-            'sheets': sheets     # 添加sheets字段以统一格式
-        }
+            
+            # 提取段落
+            logger.debug(f"开始提取文档段落，共{len(doc.paragraphs)}个段落")
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    content['paragraphs'].append({
+                        'text': para.text,
+                        'style': para.style.name if para.style else 'Normal'
+                    })
+            logger.debug(f"提取了{len(content['paragraphs'])}个非空段落")
+            
+            # 提取表格
+            logger.debug(f"开始提取文档表格，共{len(doc.tables)}个表格")
+            for i, table in enumerate(doc.tables):
+                table_data = []
+                for row in table.rows:
+                    row_data = []
+                    for cell in row.cells:
+                        row_data.append(cell.text)
+                    table_data.append(row_data)
+                content['tables'].append({
+                    'id': i + 1,
+                    'data': table_data
+                })
+            logger.debug(f"提取了{len(content['tables'])}个表格")
+            
+            # 将段落和表格内容转换为表格式数据
+            sheets_data = []
+            
+            # 将段落转换为表格数据
+            logger.debug("开始将段落转换为表格数据")
+            paragraphs_data = []
+            for i, para in enumerate(content['paragraphs']):
+                paragraphs_data.append({
+                    'ID': i + 1,
+                    '段落内容': para['text'],
+                    '样式': para['style']
+                })
+            
+            # 将表格内容转换为统一格式
+            logger.debug("开始将表格转换为统一格式")
+            tables_data = []
+            for table in content['tables']:
+                if table['data'] and len(table['data']) > 0:
+                    # 获取表头
+                    headers = ["列" + str(i+1) for i in range(len(table['data'][0]))]
+                    
+                    # 构建表格数据
+                    for row_idx, row in enumerate(table['data']):
+                        row_dict = {'行号': row_idx + 1}
+                        for col_idx, cell in enumerate(row):
+                            row_dict[headers[col_idx]] = cell
+                        tables_data.append(row_dict)
+            
+            # 将所有内容整合到sheets中
+            sheets = [
+                {
+                    'name': '文档段落',
+                    'data': paragraphs_data
+                }
+            ]
+            
+            # 如果有表格数据，添加到sheets中
+            if tables_data:
+                sheets.append({
+                    'name': '文档表格',
+                    'data': tables_data
+                })
+            
+            logger.info(f"Word文档解析完成: {file.name}，生成了{len(sheets)}个工作表")
+            
+            # 返回解析结果
+            return {
+                'file_type': 'docx',
+                'file_name': file.name,
+                'content': content,  # 保留原始content字段以保持兼容性
+                'sheets': sheets     # 添加sheets字段以统一格式
+            }
+        except Exception as e:
+            logger.error(f"解析Word文档失败: {str(e)}", exc_info=True)
+            raise
     
     def parse_excel(self, file, file_extension):
         """
@@ -697,16 +717,22 @@ class FileParseView(APIView):
         :param file_extension: 文件扩展名
         :return: 解析结果，包含工作表和数据
         """
+        logger.info(f"开始解析Excel文件: {file.name}, 扩展名: {file_extension}")
+        
         # 保存临时文件
         temp_file_path = self.save_temp_file(file)
+        logger.debug(f"创建临时文件: {temp_file_path}")
+        
         excel_file = None
         df = None
         
         try:
             # 根据文件类型选择读取方式
             if file_extension == 'csv':
+                logger.debug("使用CSV读取方式")
                 # 读取CSV文件
                 df = pd.read_csv(temp_file_path)
+                logger.debug(f"成功读取CSV文件，包含{len(df)}行数据")
                 # 确保DataFrame资源被释放
                 data = df.fillna('').to_dict(orient='records')
                 df = None  # 显式释放DataFrame
@@ -715,14 +741,20 @@ class FileParseView(APIView):
                     'name': 'Sheet1',
                     'data': data
                 }]
+                logger.debug(f"CSV数据转换为单个工作表，包含{len(data)}行数据")
             else:
+                logger.debug("使用Excel读取方式")
                 # 读取Excel文件
                 excel_file = pd.ExcelFile(temp_file_path)
                 sheets = []
                 
+                logger.debug(f"Excel文件包含{len(excel_file.sheet_names)}个工作表")
+                
                 # 遍历所有工作表
                 for sheet_name in excel_file.sheet_names:
+                    logger.debug(f"读取工作表: {sheet_name}")
                     df = excel_file.parse(sheet_name)
+                    logger.debug(f"工作表 {sheet_name} 包含{len(df)}行数据")
                     data = df.fillna('').to_dict(orient='records')
                     df = None  # 显式释放DataFrame
                     sheets.append({
@@ -734,6 +766,9 @@ class FileParseView(APIView):
                 if excel_file is not None:
                     excel_file.close()
                     excel_file = None
+                    logger.debug("已关闭Excel文件")
+            
+            logger.info(f"Excel文件解析完成: {file.name}，生成了{len(sheets)}个工作表")
             
             # 返回解析结果
             return {
@@ -756,6 +791,7 @@ class FileParseView(APIView):
             try:
                 if os.path.exists(temp_file_path):
                     os.remove(temp_file_path)
+                    logger.debug(f"已删除临时文件: {temp_file_path}")
             except Exception as e:
                 logger.warning(f"无法删除临时文件 {temp_file_path}: {str(e)}")
                 # 继续执行，不影响主要功能
@@ -766,51 +802,62 @@ class FileParseView(APIView):
         :param file: 上传的PDF文件
         :return: 解析结果，包含文档页面和内容
         """
-        # 从上传的文件创建二进制流
-        file_stream = io.BytesIO(file.read())
+        logger.info(f"开始解析PDF文件: {file.name}")
         
-        # 使用PyPDF2解析PDF
-        pdf_reader = PyPDF2.PdfReader(file_stream)
-        num_pages = len(pdf_reader.pages)
-        
-        # 提取文档内容
-        content = {
-            'num_pages': num_pages,
-            'pages': []
-        }
-        
-        # 提取每页内容
-        for i in range(num_pages):
-            page = pdf_reader.pages[i]
-            page_text = page.extract_text()
-            content['pages'].append({
-                'page_num': i + 1,
-                'text': page_text
-            })
-        
-        # 将PDF内容转换为表格式数据
-        pdf_data = []
-        for page in content['pages']:
-            pdf_data.append({
-                '页码': page['page_num'],
-                '内容': page['text']
-            })
-        
-        # 构建sheets结构
-        sheets = [
-            {
-                'name': 'PDF内容',
-                'data': pdf_data
+        try:
+            # 从上传的文件创建二进制流
+            file_stream = io.BytesIO(file.read())
+            
+            # 使用PyPDF2解析PDF
+            pdf_reader = PyPDF2.PdfReader(file_stream)
+            num_pages = len(pdf_reader.pages)
+            logger.debug(f"PDF文件包含{num_pages}页")
+            
+            # 提取文档内容
+            content = {
+                'num_pages': num_pages,
+                'pages': []
             }
-        ]
-        
-        # 返回解析结果
-        return {
-            'file_type': 'pdf',
-            'file_name': file.name,
-            'content': content,  # 保留原始content字段以保持兼容性
-            'sheets': sheets     # 添加sheets字段以统一格式
-        }
+            
+            # 提取每页内容
+            for i in range(num_pages):
+                logger.debug(f"解析第{i+1}页")
+                page = pdf_reader.pages[i]
+                page_text = page.extract_text()
+                content['pages'].append({
+                    'page_num': i + 1,
+                    'text': page_text
+                })
+            
+            # 将PDF内容转换为表格式数据
+            logger.debug("将PDF内容转换为表格数据")
+            pdf_data = []
+            for page in content['pages']:
+                pdf_data.append({
+                    '页码': page['page_num'],
+                    '内容': page['text']
+                })
+            
+            # 构建sheets结构
+            sheets = [
+                {
+                    'name': 'PDF内容',
+                    'data': pdf_data
+                }
+            ]
+            
+            logger.info(f"PDF文件解析完成: {file.name}")
+            
+            # 返回解析结果
+            return {
+                'file_type': 'pdf',
+                'file_name': file.name,
+                'content': content,  # 保留原始content字段以保持兼容性
+                'sheets': sheets     # 添加sheets字段以统一格式
+            }
+        except Exception as e:
+            logger.error(f"解析PDF文件失败: {str(e)}", exc_info=True)
+            raise
 
 
 @api_view(['POST'])
@@ -1344,5 +1391,776 @@ def export_test_cases(request):
         return JsonResponse({
             'code': 500,
             'message': f'导出测试用例失败: {str(e)}',
+            'data': None
+        }, status=500)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@authentication_classes([JWTAuthentication])
+def batch_edit_test_cases(request):
+    """
+    批量编辑/创建测试用例
+    
+    请求参数:
+    - test_cases: 测试用例列表，每个测试用例包含完整的测试用例数据
+    - project_id: 项目ID，如果是创建新用例时使用
+    
+    返回:
+    - 编辑/创建后的测试用例信息列表
+    """
+    try:
+        logger.info(f"接收到批量编辑测试用例请求，用户ID: {request.user.id}")
+        
+        # 解析请求数据
+        test_cases = request.data.get('test_cases', [])
+        project_id = request.data.get('project_id', 1)  # 默认使用项目ID 1
+        
+        if not test_cases:
+            logger.warning("请求中未提供测试用例数据")
+            return JsonResponse({
+                'code': 400,
+                'message': '测试用例数据不能为空',
+                'data': None
+            }, status=400)
+        
+        logger.debug(f"批量处理{len(test_cases)}个测试用例")
+        
+        # 导入TestCase模型
+        from test_platform.models import TestCase
+        
+        # 优先级映射
+        priority_map = {'高': 2, '中': 1, '低': 0}
+        
+        # 存储处理结果
+        results = []
+        created_count = 0
+        updated_count = 0
+        failed_count = 0
+        
+        # 批量处理测试用例
+        for case_data in test_cases:
+            try:
+                case_id = case_data.get('id')
+                
+                # 如果提供了ID，尝试更新现有测试用例
+                if case_id:
+                    try:
+                        test_case = TestCase.objects.get(test_case_id=case_id)
+                        logger.debug(f"更新测试用例: ID={case_id}")
+                        
+                        # 更新测试用例字段
+                        if 'title' in case_data:
+                            test_case.case_name = case_data.get('title')
+                        if 'description' in case_data:
+                            test_case.case_description = case_data.get('description', '')
+                        if 'api_path' in case_data:
+                            test_case.case_path = case_data.get('api_path')
+                        if 'method' in case_data:
+                            test_case.case_request_method = case_data.get('method')
+                        if 'priority' in case_data:
+                            priority_value = priority_map.get(case_data.get('priority'), 1)
+                            test_case.case_priority = priority_value
+                        if 'headers' in case_data:
+                            test_case.case_request_headers = json.dumps(case_data.get('headers', {}))
+                        if 'body' in case_data:
+                            test_case.case_requests_body = json.dumps(case_data.get('body', {}))
+                        if 'assertions' in case_data:
+                            test_case.case_assert_type = case_data.get('assertions', '')
+                        if 'expected_result' in case_data:
+                            test_case.case_expect_result = json.dumps(case_data.get('expected_result', {}))
+                        if 'extractors' in case_data:
+                            test_case.case_extractors = json.dumps(case_data.get('extractors', []))
+                        if 'tests' in case_data:
+                            test_case.case_tests = json.dumps(case_data.get('tests', []))
+                        
+                        # 更新时间
+                        test_case.update_time = timezone.now()
+                        
+                        # 保存更新
+                        test_case.save()
+                        updated_count += 1
+                        
+                        results.append({
+                            'id': test_case.test_case_id,
+                            'name': test_case.case_name,
+                            'status': 'updated',
+                            'success': True
+                        })
+                    except TestCase.DoesNotExist:
+                        logger.warning(f"测试用例不存在: ID={case_id}")
+                        failed_count += 1
+                        results.append({
+                            'id': case_id,
+                            'name': case_data.get('title', '未知'),
+                            'status': 'failed',
+                            'success': False,
+                            'message': '测试用例不存在'
+                        })
+                        continue
+                else:
+                    # 创建新的测试用例
+                    case_name = case_data.get('title', '')
+                    logger.debug(f"创建新测试用例: {case_name}")
+                    
+                    if not case_name:
+                        logger.warning("测试用例名称为空，跳过")
+                        failed_count += 1
+                        results.append({
+                            'name': '未命名',
+                            'status': 'failed',
+                            'success': False,
+                            'message': '测试用例名称不能为空'
+                        })
+                        continue
+                    
+                    # 映射优先级
+                    priority_value = priority_map.get(case_data.get('priority', '中'), 1)
+                    
+                    # 创建测试用例
+                    test_case = TestCase.objects.create(
+                        case_name=case_name,
+                        case_description=case_data.get('description', ''),
+                        case_path=case_data.get('api_path', ''),
+                        case_request_method=case_data.get('method', 'GET'),
+                        case_priority=priority_value,
+                        case_params='',
+                        case_status=1,  # 假设1表示"启用"
+                        case_precondition='',
+                        case_request_headers=json.dumps(case_data.get('headers', {})),
+                        case_requests_body=json.dumps(case_data.get('body', {})),
+                        case_assert_type=case_data.get('assertions', ''),
+                        case_assert_contents=json.dumps(case_data.get('tests', [])),
+                        case_expect_result=json.dumps(case_data.get('expected_result', {})),
+                        create_time=timezone.now(),
+                        update_time=timezone.now(),
+                        creator_id=request.user.id,
+                        project_id=project_id,
+                        case_extractors=json.dumps(case_data.get('extractors', []))
+                    )
+                    
+                    created_count += 1
+                    results.append({
+                        'id': test_case.test_case_id,
+                        'name': test_case.case_name,
+                        'status': 'created',
+                        'success': True
+                    })
+            except Exception as e:
+                logger.error(f"处理测试用例失败: {str(e)}")
+                failed_count += 1
+                results.append({
+                    'name': case_data.get('title', '未知'),
+                    'status': 'failed',
+                    'success': False,
+                    'message': str(e)
+                })
+        
+        logger.info(f"批量测试用例处理完成: 创建={created_count}, 更新={updated_count}, 失败={failed_count}")
+        
+        return JsonResponse({
+            'code': 200,
+            'message': f'测试用例批量处理完成: 创建={created_count}, 更新={updated_count}, 失败={failed_count}',
+            'data': {
+                'results': results,
+                'created_count': created_count,
+                'updated_count': updated_count,
+                'failed_count': failed_count,
+                'total': len(test_cases)
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"批量编辑测试用例失败: {str(e)}", exc_info=True)
+        return JsonResponse({
+            'code': 500,
+            'message': f'批量编辑测试用例失败: {str(e)}',
+            'data': None
+        }, status=500)
+
+@api_view(['POST', 'PUT'])
+@permission_classes([IsAuthenticated])
+@authentication_classes([JWTAuthentication])
+def edit_test_case(request):
+    """
+    编辑从DeepSeek分析提取的测试用例
+    
+    请求参数:
+    - test_case: 需要编辑的测试用例数据
+    - case_id: [可选] 已存在的测试用例ID，如果提供则更新该用例，否则创建新用例
+    
+    返回:
+    - 编辑后的测试用例信息
+    """
+    try:
+        logger.info(f"接收到编辑测试用例请求，用户ID: {request.user.id}")
+        
+        # 解析请求数据
+        test_case_data = request.data.get('test_case', {})
+        case_id = request.data.get('case_id')
+        
+        if not test_case_data:
+            logger.warning("请求中未提供测试用例数据")
+            return JsonResponse({
+                'code': 400,
+                'message': '测试用例数据不能为空',
+                'data': None
+            }, status=400)
+        
+        # 导入TestCase模型
+        from test_platform.models import TestCase
+        
+        # 如果提供了case_id，则更新现有测试用例
+        if case_id:
+            logger.info(f"更新现有测试用例，ID: {case_id}")
+            try:
+                test_case = TestCase.objects.get(test_case_id=case_id)
+                
+                # 更新测试用例字段
+                if 'title' in test_case_data:
+                    test_case.case_name = test_case_data.get('title')
+                if 'description' in test_case_data:
+                    test_case.case_description = test_case_data.get('description', '')
+                if 'api_path' in test_case_data:
+                    test_case.case_path = test_case_data.get('api_path')
+                if 'method' in test_case_data:
+                    test_case.case_request_method = test_case_data.get('method')
+                if 'priority' in test_case_data:
+                    # 映射优先级
+                    priority_map = {'高': 2, '中': 1, '低': 0}
+                    priority_value = priority_map.get(test_case_data.get('priority'), 1)
+                    test_case.case_priority = priority_value
+                if 'headers' in test_case_data:
+                    test_case.case_request_headers = json.dumps(test_case_data.get('headers', {}))
+                if 'body' in test_case_data:
+                    test_case.case_requests_body = json.dumps(test_case_data.get('body', {}))
+                if 'assertions' in test_case_data:
+                    test_case.case_assert_type = test_case_data.get('assertions', '')
+                if 'expected_result' in test_case_data:
+                    test_case.case_expect_result = json.dumps(test_case_data.get('expected_result', {}))
+                if 'extractors' in test_case_data:
+                    test_case.case_extractors = json.dumps(test_case_data.get('extractors', []))
+                if 'tests' in test_case_data:
+                    test_case.case_tests = json.dumps(test_case_data.get('tests', []))
+                
+                # 更新时间
+                test_case.update_time = timezone.now()
+                
+                # 保存更新
+                test_case.save()
+                logger.info(f"测试用例更新成功: ID={test_case.test_case_id}, 名称={test_case.case_name}")
+                
+                return JsonResponse({
+                    'code': 200,
+                    'message': '测试用例更新成功',
+                    'data': {
+                        'id': test_case.test_case_id,
+                        'name': test_case.case_name,
+                        'description': test_case.case_description,
+                        'api_path': test_case.case_path,
+                        'method': test_case.case_request_method,
+                        'priority': {0: '低', 1: '中', 2: '高'}.get(test_case.case_priority, '中'),
+                        'headers': json.loads(test_case.case_request_headers) if test_case.case_request_headers else {},
+                        'body': json.loads(test_case.case_requests_body) if test_case.case_requests_body else {},
+                        'assertions': test_case.case_assert_type,
+                        'expected_result': json.loads(test_case.case_expect_result) if test_case.case_expect_result else {},
+                        'extractors': json.loads(test_case.case_extractors) if test_case.case_extractors else []
+                    }
+                })
+            except TestCase.DoesNotExist:
+                logger.warning(f"测试用例不存在: ID={case_id}")
+                return JsonResponse({
+                    'code': 404,
+                    'message': '测试用例不存在',
+                    'data': None
+                }, status=404)
+        else:
+            # 创建新的测试用例
+            logger.info("创建新的测试用例")
+            
+            # 获取必要的字段
+            project_id = test_case_data.get('project_id', 1)  # 默认使用项目ID 1
+            case_name = test_case_data.get('title', '')
+            
+            if not case_name:
+                logger.warning("测试用例名称为空")
+                return JsonResponse({
+                    'code': 400,
+                    'message': '测试用例名称不能为空',
+                    'data': None
+                }, status=400)
+            
+            # 映射优先级
+            priority_map = {'高': 2, '中': 1, '低': 0}
+            priority_value = priority_map.get(test_case_data.get('priority', '中'), 1)
+            
+            # 创建测试用例
+            test_case = TestCase.objects.create(
+                case_name=case_name,
+                case_description=test_case_data.get('description', ''),
+                case_path=test_case_data.get('api_path', ''),
+                case_request_method=test_case_data.get('method', 'GET'),
+                case_priority=priority_value,
+                case_params='',
+                case_status=1,  # 假设1表示"启用"
+                case_precondition='',
+                case_request_headers=json.dumps(test_case_data.get('headers', {})),
+                case_requests_body=json.dumps(test_case_data.get('body', {})),
+                case_assert_type=test_case_data.get('assertions', ''),
+                case_assert_contents=json.dumps(test_case_data.get('tests', [])),
+                case_expect_result=json.dumps(test_case_data.get('expected_result', {})),
+                create_time=timezone.now(),
+                update_time=timezone.now(),
+                creator_id=request.user.id,
+                project_id=project_id,
+                case_extractors=json.dumps(test_case_data.get('extractors', []))
+            )
+            
+            logger.info(f"测试用例创建成功: ID={test_case.test_case_id}, 名称={test_case.case_name}")
+            
+            return JsonResponse({
+                'code': 200,
+                'message': '测试用例创建成功',
+                'data': {
+                    'id': test_case.test_case_id,
+                    'name': test_case.case_name,
+                    'description': test_case.case_description,
+                    'api_path': test_case.case_path,
+                    'method': test_case.case_request_method,
+                    'priority': {0: '低', 1: '中', 2: '高'}.get(test_case.case_priority, '中'),
+                    'headers': json.loads(test_case.case_request_headers) if test_case.case_request_headers else {},
+                    'body': json.loads(test_case.case_requests_body) if test_case.case_requests_body else {},
+                    'assertions': test_case.case_assert_type,
+                    'expected_result': json.loads(test_case.case_expect_result) if test_case.case_expect_result else {},
+                    'extractors': json.loads(test_case.case_extractors) if test_case.case_extractors else []
+                }
+            })
+        
+    except Exception as e:
+        logger.error(f"编辑测试用例失败: {str(e)}", exc_info=True)
+        return JsonResponse({
+            'code': 500,
+            'message': f'编辑测试用例失败: {str(e)}',
+            'data': None
+        }, status=500)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@authentication_classes([JWTAuthentication])
+def save_analysis_result(request):
+    """
+    保存AI分析结果
+    
+    请求参数:
+    - analysis_data: 包含文件名、文件类型、DeepSeek响应、解析的表格数据等
+    - project_id: 关联的项目ID (可选)
+    
+    返回:
+    - 保存结果
+    """
+    try:
+        logger.info(f"接收到保存AI分析结果请求，用户ID: {request.user.id}")
+        
+        # 解析请求数据
+        analysis_data = request.data.get('analysis_data', {})
+        project_id = request.data.get('project_id')
+        
+        if not analysis_data:
+            logger.warning("请求中未提供分析数据")
+            return JsonResponse({
+                'code': 400,
+                'message': '分析数据不能为空',
+                'data': None
+            }, status=400)
+        
+        # 导入AnalysisResult模型
+        from test_platform.models import AnalysisResult, Project
+        
+        # 获取必要字段
+        file_name = analysis_data.get('file_name', '')
+        file_type = analysis_data.get('file_type', '')
+        
+        if not file_name or not file_type:
+            logger.warning("文件名或文件类型为空")
+            return JsonResponse({
+                'code': 400,
+                'message': '文件名和文件类型不能为空',
+                'data': None
+            }, status=400)
+        
+        # 处理DeepSeek响应数据
+        deepseek_response = analysis_data.get('deepseek_response')
+        sheets = analysis_data.get('sheets', [])
+        test_cases = []
+        
+        # 从DeepSeek响应中提取测试用例
+        if deepseek_response and 'test_cases' in deepseek_response:
+            test_cases = deepseek_response.get('test_cases', [])
+        
+        # 创建分析结果记录
+        analysis_result = AnalysisResult()
+        analysis_result.file_name = file_name
+        analysis_result.file_type = file_type
+        analysis_result.deepseek_response = json.dumps(deepseek_response) if deepseek_response else '{}'
+        analysis_result.sheets_data = json.dumps(sheets) if sheets else '[]'
+        analysis_result.test_cases_data = json.dumps(test_cases) if test_cases else '[]'
+        analysis_result.creator = request.user
+        
+        # 关联项目(如果提供)
+        if project_id:
+            try:
+                project = Project.objects.get(project_id=project_id)
+                analysis_result.project = project
+            except Project.DoesNotExist:
+                logger.warning(f"关联的项目不存在: ID={project_id}")
+                # 仍然保存分析结果，但不关联项目
+        
+        # 保存分析结果
+        analysis_result.save()
+        logger.info(f"AI分析结果保存成功: ID={analysis_result.analysis_id}, 文件名={file_name}")
+        
+        return JsonResponse({
+            'code': 200,
+            'message': 'AI分析结果保存成功',
+            'data': {
+                'analysis_id': analysis_result.analysis_id,
+                'file_name': analysis_result.file_name,
+                'file_type': analysis_result.file_type,
+                'create_time': analysis_result.create_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'test_cases_count': len(test_cases)
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"保存AI分析结果失败: {str(e)}", exc_info=True)
+        return JsonResponse({
+            'code': 500,
+            'message': f'保存AI分析结果失败: {str(e)}',
+            'data': None
+        }, status=500)
+
+def process_large_data_with_llm(data, client, model, temperature=0.7, max_chunk_size=8000, system_prompt=None):
+    """
+    处理大型数据时，将数据分批发送给大模型并汇总结果
+    
+    :param data: 要处理的数据文本
+    :param client: OpenAI客户端实例
+    :param model: 使用的模型名称
+    :param temperature: 温度参数，控制输出的随机性
+    :param max_chunk_size: 每个分块的最大字符数
+    :param system_prompt: 系统提示文本
+    :return: 汇总后的结果
+    """
+    logger.info(f"开始处理大型数据，总长度: {len(data)} 字符")
+    
+    if len(data) <= max_chunk_size:
+        logger.info("数据量较小，直接发送处理")
+        # 数据量小，直接处理
+        system_message = {"role": "system", "content": system_prompt} if system_prompt else {"role": "system", "content": "请分析以下数据。"}
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                system_message,
+                {"role": "user", "content": data}
+            ],
+            temperature=temperature,
+            stream=False
+        )
+        return response.choices[0].message.content
+    
+    # 数据量大，分块处理
+    logger.info(f"数据量较大，需要分块处理，每块最大 {max_chunk_size} 字符")
+    chunks = []
+    current_chunk = ""
+    
+    # 1. 分割数据为合适大小的块
+    for line in data.split('\n'):
+        if len(current_chunk) + len(line) + 1 > max_chunk_size:
+            chunks.append(current_chunk)
+            current_chunk = line
+        else:
+            if current_chunk:
+                current_chunk += '\n' + line
+            else:
+                current_chunk = line
+                
+    # 添加最后一个块
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    logger.info(f"数据已分割为 {len(chunks)} 个块")
+    
+    # 2. 逐块处理并收集结果
+    partial_results = []
+    
+    for i, chunk in enumerate(chunks):
+        logger.info(f"处理第 {i+1}/{len(chunks)} 块数据，长度: {len(chunk)} 字符")
+        
+        # 第一块使用完整的系统提示
+        if i == 0:
+            prompt = system_prompt if system_prompt else "请分析以下数据。这是第一部分数据，之后会有更多部分。请提取关键信息。"
+        else:
+            prompt = "这是数据的继续部分，请基于之前的分析继续提取信息。"
+        
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": chunk}
+                ],
+                temperature=temperature,
+                stream=False
+            )
+            result = response.choices[0].message.content
+            partial_results.append(result)
+            logger.info(f"第 {i+1} 块数据处理完成，结果长度: {len(result)} 字符")
+        except Exception as e:
+            logger.error(f"处理第 {i+1} 块数据时出错: {str(e)}")
+            partial_results.append(f"处理出错: {str(e)}")
+    
+    # 3. 汇总结果
+    if len(partial_results) == 1:
+        logger.info("只有一个结果块，无需汇总")
+        return partial_results[0]
+    
+    logger.info(f"开始汇总 {len(partial_results)} 个部分结果")
+    
+    # 将所有部分结果组合为一个字符串
+    combined_results = "\n\n===== 部分结果分隔线 =====\n\n".join(partial_results)
+    
+    # 发送汇总请求
+    try:
+        summary_response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": """
+请对之前分批分析的多个结果进行汇总整合。每个部分结果之间用分隔线隔开。
+你需要把所有测试用例整合成一个完整的、一致的JSON数组。
+必须严格按照以下格式输出：
+
+```json
+[
+  {
+    "title": "测试用例标题",
+    "api_path": "接口路径",
+    "method": "请求方法",
+    ...其他测试用例字段
+  },
+  {
+    ...第二个测试用例
+  }
+]
+```
+
+请确保输出是有效的JSON格式，只包含测试用例数组，不要添加任何额外的解释。
+如果发现重复的测试用例，请只保留一个。
+"""},
+                {"role": "user", "content": combined_results}
+            ],
+            temperature=0.2,  # 使用较低的温度确保更确定性的结果
+            stream=False
+        )
+        final_result = summary_response.choices[0].message.content
+        logger.info(f"结果汇总完成，最终结果长度: {len(final_result)} 字符")
+        return final_result
+    except Exception as e:
+        logger.error(f"汇总结果时出错: {str(e)}")
+        # 如果汇总失败，返回第一个结果
+        return partial_results[0]
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@authentication_classes([JWTAuthentication])
+def get_analysis_results(request):
+    """
+    获取AI分析结果
+    
+    请求参数:
+    - analysis_id: [可选] 分析结果ID，如果提供则返回详细结果，否则返回分析结果列表
+    - project_id: [可选] 项目ID，如果提供则返回该项目的分析结果列表
+    - limit: [可选] 返回结果数量限制，默认为20
+    - offset: [可选] 分页偏移量，默认为0
+    
+    返回:
+    - 分析结果列表或详情
+    """
+    try:
+        # 导入模型
+        from test_platform.models import AnalysisResult, Project
+        
+        # 获取请求参数
+        analysis_id = request.GET.get('analysis_id')
+        project_id = request.GET.get('project_id')
+        limit = int(request.GET.get('limit', 20))
+        offset = int(request.GET.get('offset', 0))
+        
+        # 如果提供了analysis_id，则返回详情
+        if analysis_id:
+            try:
+                analysis = AnalysisResult.objects.get(analysis_id=analysis_id)
+                
+                # 解析JSON字段
+                try:
+                    deepseek_response = json.loads(analysis.deepseek_response) if analysis.deepseek_response else {}
+                except json.JSONDecodeError:
+                    deepseek_response = {}
+                
+                try:
+                    sheets_data = json.loads(analysis.sheets_data) if analysis.sheets_data else []
+                except json.JSONDecodeError:
+                    sheets_data = []
+                
+                try:
+                    test_cases_data = json.loads(analysis.test_cases_data) if analysis.test_cases_data else []
+                except json.JSONDecodeError:
+                    test_cases_data = []
+                
+                # 构建响应数据
+                data = {
+                    'analysis_id': analysis.analysis_id,
+                    'file_name': analysis.file_name,
+                    'file_type': analysis.file_type,
+                    'deepseek_response': deepseek_response,
+                    'sheets': sheets_data,
+                    'test_cases': test_cases_data,
+                    'creator': analysis.creator.username if analysis.creator else None,
+                    'project_id': analysis.project.project_id if analysis.project else None,
+                    'project_name': analysis.project.name if analysis.project else None,
+                    'create_time': analysis.create_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'update_time': analysis.update_time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                
+                return JsonResponse({
+                    'code': 200,
+                    'message': '获取分析结果成功',
+                    'data': data
+                })
+            except AnalysisResult.DoesNotExist:
+                return JsonResponse({
+                    'code': 404,
+                    'message': '分析结果不存在',
+                    'data': None
+                }, status=404)
+        
+        # 否则，返回分析结果列表
+        query = AnalysisResult.objects.all()
+        
+        # 如果提供了项目ID，则进行过滤
+        if project_id:
+            query = query.filter(project_id=project_id)
+        
+        # 获取总记录数
+        total = query.count()
+        
+        # 分页查询
+        results = query.order_by('-create_time')[offset:offset+limit]
+        
+        # 构建响应数据
+        result_list = []
+        for analysis in results:
+            # 提取测试用例数量
+            test_cases_count = 0
+            if analysis.test_cases_data:
+                try:
+                    test_cases_data = json.loads(analysis.test_cases_data)
+                    test_cases_count = len(test_cases_data) if isinstance(test_cases_data, list) else 0
+                except json.JSONDecodeError:
+                    pass
+                    
+            result_list.append({
+                'analysis_id': analysis.analysis_id,
+                'file_name': analysis.file_name,
+                'file_type': analysis.file_type,
+                'test_cases_count': test_cases_count,
+                'creator': analysis.creator.username if analysis.creator else None,
+                'project_id': analysis.project.project_id if analysis.project else None,
+                'project_name': analysis.project.name if analysis.project else None,
+                'create_time': analysis.create_time.strftime('%Y-%m-%d %H:%M:%S')
+            })
+        
+        return JsonResponse({
+            'code': 200,
+            'message': '获取分析结果列表成功',
+            'data': {
+                'total': total,
+                'results': result_list
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"获取分析结果失败: {str(e)}", exc_info=True)
+        return JsonResponse({
+            'code': 500,
+            'message': f'获取分析结果失败: {str(e)}',
+            'data': None
+        }, status=500)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@authentication_classes([JWTAuthentication])
+def get_analysis_result_detail(request, analysis_id):
+    """
+    获取单个AI分析结果详情
+    
+    :param request: HTTP请求
+    :param analysis_id: 分析结果ID
+    :return: 详细的分析结果数据
+    """
+    try:
+        # 导入模型
+        from test_platform.models import AnalysisResult
+        
+        try:
+            # 查询分析结果
+            analysis = AnalysisResult.objects.get(analysis_id=analysis_id)
+            
+            # 解析JSON字段
+            try:
+                deepseek_response = json.loads(analysis.deepseek_response) if analysis.deepseek_response else {}
+            except json.JSONDecodeError:
+                deepseek_response = {}
+            
+            try:
+                sheets_data = json.loads(analysis.sheets_data) if analysis.sheets_data else []
+            except json.JSONDecodeError:
+                sheets_data = []
+            
+            try:
+                test_cases_data = json.loads(analysis.test_cases_data) if analysis.test_cases_data else []
+            except json.JSONDecodeError:
+                test_cases_data = []
+            
+            # 确保deepseek_response包含test_cases
+            if 'test_cases' not in deepseek_response:
+                deepseek_response['test_cases'] = test_cases_data
+            
+            # 构建响应数据，按照前端要求的格式
+            data = {
+                'id': analysis.analysis_id,
+                'file_name': analysis.file_name,
+                'file_type': analysis.file_type,
+                'model': deepseek_response.get('model', 'deepseek-chat'),
+                'create_time': analysis.create_time.isoformat(),
+                'deepseek_response': deepseek_response,
+                'sheets': sheets_data
+            }
+            
+            return JsonResponse({
+                'code': 200,
+                'message': 'success',
+                'data': data
+            })
+        except AnalysisResult.DoesNotExist:
+            return JsonResponse({
+                'code': 404,
+                'message': '分析结果不存在',
+                'data': None
+            }, status=404)
+        
+    except Exception as e:
+        logger.error(f"获取分析结果详情失败: {str(e)}", exc_info=True)
+        return JsonResponse({
+            'code': 500,
+            'message': f'获取分析结果详情失败: {str(e)}',
             'data': None
         }, status=500)
