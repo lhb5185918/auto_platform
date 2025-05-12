@@ -20,12 +20,28 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:6.2
+    container_name: auto_platform_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   web:
     build: .
     container_name: auto_platform_web
     restart: always
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       - DEBUG=False
@@ -37,17 +53,41 @@ services:
       - DATABASE_PASSWORD=dbpassword
       - DATABASE_HOST=db
       - DATABASE_PORT=3306
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     ports:
       - "8000:8000"
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
-    command: >
-      bash -c "python manage.py makemigrations &&
-               python manage.py migrate &&
-               gunicorn --bind 0.0.0.0:8000 auto_platform.wsgi:application"
+      - ./:/app
+    command: "/app/docker-entrypoint.sh"
+
+  celery:
+    build: .
+    container_name: auto_platform_celery
+    restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment:
+      - DEBUG=False
+      - DATABASE_ENGINE=django.db.backends.mysql
+      - DATABASE_NAME=auto_platform
+      - DATABASE_USER=root1
+      - DATABASE_PASSWORD=dbpassword
+      - DATABASE_HOST=db
+      - DATABASE_PORT=3306
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./:/app
+    command: "/app/celery-entrypoint.sh"
 
 volumes:
   mysql_data:
+  redis_data:
   static_volume:
   media_volume: 
