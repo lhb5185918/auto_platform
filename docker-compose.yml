@@ -1,25 +1,6 @@
 version: '3.8'
 
 services:
-  db:
-    image: mysql:8.0
-    container_name: auto_platform_db
-    restart: always
-    environment:
-      - MYSQL_DATABASE=auto_platform
-      - MYSQL_USER=dbuser
-      - MYSQL_PASSWORD=dbpassword
-      - MYSQL_ROOT_PASSWORD=rootpassword
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    command: --default-authentication-plugin=mysql_native_password
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 5s
-      retries: 10
-
   redis:
     image: redis:6.2
     container_name: auto_platform_redis
@@ -39,21 +20,19 @@ services:
     container_name: auto_platform_web
     restart: always
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       - DEBUG=False
       - SECRET_KEY=change_me_in_production
-      - DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1 [::1]
+      - DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1 [::1] 你的公网IP 你的域名
       - DATABASE_ENGINE=django.db.backends.mysql
-      - DATABASE_NAME=auto_platform
+      - DATABASE_NAME=test_platform
       - DATABASE_USER=root1
-      - DATABASE_PASSWORD=dbpassword
-      - DATABASE_HOST=db
+      - DATABASE_PASSWORD=Lhx7758521003!
+      - DATABASE_HOST=rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com
       - DATABASE_PORT=3306
-      - REDIS_HOST=redis
+      - REDIS_HOST=redis://47.94.195.221:6379/0
       - REDIS_PORT=6379
     ports:
       - "8000:8000"
@@ -75,19 +54,18 @@ services:
     environment:
       - DEBUG=False
       - DATABASE_ENGINE=django.db.backends.mysql
-      - DATABASE_NAME=auto_platform
+      - DATABASE_NAME=test_platform
       - DATABASE_USER=root1
-      - DATABASE_PASSWORD=dbpassword
-      - DATABASE_HOST=db
+      - DATABASE_PASSWORD=Lhx7758521003!
+      - DATABASE_HOST=rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com
       - DATABASE_PORT=3306
-      - REDIS_HOST=redis
+      - REDIS_HOST=redis://47.94.195.221:6379/0
       - REDIS_PORT=6379
     volumes:
       - ./:/app
     command: "/app/celery-entrypoint.sh"
 
 volumes:
-  mysql_data:
   redis_data:
   static_volume:
-  media_volume: 
+  media_volume:
