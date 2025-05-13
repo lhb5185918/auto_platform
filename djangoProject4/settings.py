@@ -175,6 +175,7 @@ SIMPLE_JWT = {
 # CORS配置
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ALLOWED_ORIGINS', 'http://localhost:5174 http://127.0.0.1:5174 http://47.94.195.221:8010').split(' ')
 CORS_ALLOW_METHODS = [
     'DELETE',
     'GET',
@@ -204,6 +205,7 @@ CSRF_TRUSTED_ORIGINS = [
     'http://127.0.0.1:8080',
     'http://127.0.0.1:8081',
     'http://localhost:5176',
+    'http://47.94.195.221:8010',
 ]
 
 # Celery配置

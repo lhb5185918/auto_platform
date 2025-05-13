@@ -1,71 +1,66 @@
 version: '3.8'
 
-services:
-  redis:
-    image: redis:6.2
-    container_name: auto_platform_redis
-    restart: always
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+x-common-variables: &common-variables
+  DEBUG: "False"
+  SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+  DJANGO_ALLOWED_HOSTS: "localhost 127.0.0.1 [::1] ${PUBLIC_IP} ${DOMAIN_NAME} 47.94.195.221"
+  DATABASE_ENGINE: "django.db.backends.mysql"
+  DATABASE_NAME: ${DB_NAME:-test_platform}
+  DATABASE_USER: ${DB_USER:-root1}
+  DATABASE_PASSWORD: ${DB_PASSWORD:-Lhx7758521003!}
+  DATABASE_HOST: ${DB_HOST:-rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com}
+  DATABASE_PORT: ${DB_PORT:-3306}
+  REDIS_HOST: ${REDIS_HOST:-47.94.195.221}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  CORS_ALLOWED_ORIGINS: "http://47.94.195.221:8010"
 
+services:
   web:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
     container_name: auto_platform_web
     restart: always
-    depends_on:
-      redis:
-        condition: service_healthy
+    dns:
+      - 223.5.5.5  # 阿里云公共DNS
+      - 223.6.6.6  # 阿里云公共DNS备用
+    extra_hosts:
+      - "rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com:${DB_IP:-47.94.195.221}"  # 如果需要，可以设置主机名到特定IP的映射
     environment:
-      - DEBUG=False
-      - SECRET_KEY=change_me_in_production
-      - DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1 [::1] 你的公网IP 你的域名
-      - DATABASE_ENGINE=django.db.backends.mysql
-      - DATABASE_NAME=test_platform
-      - DATABASE_USER=root1
-      - DATABASE_PASSWORD=Lhx7758521003!
-      - DATABASE_HOST=rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com
-      - DATABASE_PORT=3306
-      - REDIS_HOST=redis://47.94.195.221:6379/0
-      - REDIS_PORT=6379
+      <<: *common-variables
     ports:
       - "8000:8000"
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
       - ./:/app
-    command: "/app/docker-entrypoint.sh"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/admin/login/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   celery:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: auto_platform_celery
     restart: always
+    dns:
+      - 223.5.5.5  # 阿里云公共DNS
+      - 223.6.6.6  # 阿里云公共DNS备用
+    extra_hosts:
+      - "rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com:${DB_IP:-47.94.195.221}"  # 如果需要，可以设置主机名到特定IP的映射
     depends_on:
-      redis:
-        condition: service_healthy
       web:
         condition: service_started
     environment:
-      - DEBUG=False
-      - DATABASE_ENGINE=django.db.backends.mysql
-      - DATABASE_NAME=test_platform
-      - DATABASE_USER=root1
-      - DATABASE_PASSWORD=Lhx7758521003!
-      - DATABASE_HOST=rm-bp1187tb295ka68e9lo.mysql.rds.aliyuncs.com
-      - DATABASE_PORT=3306
-      - REDIS_HOST=redis://47.94.195.221:6379/0
-      - REDIS_PORT=6379
+      <<: *common-variables
     volumes:
       - ./:/app
     command: "/app/celery-entrypoint.sh"
 
 volumes:
-  redis_data:
   static_volume:
   media_volume:
