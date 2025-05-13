@@ -37,12 +37,17 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 
-# 创建必要的目录结构
+# 创建必要的目录结构，并确保它们存在且有正确权限
 RUN mkdir -p /app/logs /app/media /app/staticfiles && \
-    chmod -R 777 /app/logs /app/media /app/staticfiles
+    chmod -R 777 /app/logs /app/media /app/staticfiles && \
+    touch /app/logs/access.log /app/logs/error.log && \
+    chmod 666 /app/logs/access.log /app/logs/error.log
 
 # 复制项目文件
 COPY . /app/
+
+# 确保目录不被覆盖
+RUN mkdir -p /app/logs && chmod -R 777 /app/logs
 
 # 统一转换脚本为unix格式并赋予执行权限
 RUN find /app -type f -name "*.sh" -exec dos2unix {} \; && \

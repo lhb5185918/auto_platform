@@ -33,7 +33,9 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
+      - ./logs:/app/logs
       - ./:/app
+      - /app/logs:/app/logs  # 确保logs目录不被覆盖
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/admin/login/"]
       interval: 30s
@@ -58,7 +60,9 @@ services:
     environment:
       <<: *common-variables
     volumes:
+      - ./logs:/app/logs
       - ./:/app
+      - /app/logs:/app/logs  # 确保logs目录不被覆盖
     command: "/app/celery-entrypoint.sh"
 
 volumes:

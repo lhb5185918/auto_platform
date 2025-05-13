@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# 确保日志目录存在
+mkdir -p /app/logs
+chmod -R 777 /app/logs
+
 # 检查DNS是否能解析Redis主机名
 echo "验证Redis主机名DNS解析..."
 if [[ "${REDIS_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
