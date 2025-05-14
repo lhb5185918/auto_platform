@@ -55,23 +55,18 @@ for i in {1..30}; do
   sleep 1
 done
 
+# 尝试创建数据库（如果不存在）
+echo "检查并创建数据库..."
+mysql -h ${DATABASE_HOST} -P ${DATABASE_PORT} -u ${DATABASE_USER} -p${DATABASE_PASSWORD} -e "CREATE DATABASE IF NOT EXISTS ${DATABASE_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+echo "数据库就绪"
+
+# 执行数据库迁移（取消跳过数据库迁移）
+echo "执行数据库迁移..."
+python manage.py migrate
+
 # 收集静态文件
 echo "收集静态文件..."
 python manage.py collectstatic --noinput
-
-# 跳过数据库迁移
-echo "跳过数据库迁移..."
-# 如果需要验证数据库连接可以取消注释下面的代码
-# python -c "
-# import django
-# from django.db import connections
-# django.setup()
-# try:
-#     connections['default'].cursor()
-#     print('数据库连接正常')
-# except Exception as e:
-#     print(f'数据库连接失败: {e}')
-# "
 
 # 启动Gunicorn服务器
 echo "启动Web服务器..."
